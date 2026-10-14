@@ -1,0 +1,1014 @@
+use crate::{
+    editor,
+    model::{self, Book, Contact, Store},
+    prefs, theme, transfer,
+};
+use gtk::{gdk, glib, prelude::*};
+use nixe_ui::{chrome, widgets as w};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+pub type Ui = Rc<State>;
+pub struct State {
+    pub window: gtk::ApplicationWindow,
+    pub overlay: gtk::Overlay,
+    pub book: RefCell<Book>,
+    pub store: RefCell<Store>,
+    pub section: RefCell<String>,
+    pub list: gtk::ListBox,
+    pub details: gtk::Box,
+    pub search: gtk::SearchEntry,
+    nav: gtk::Box,
+    head: gtk::Box,
+    sidebar: gtk::Box,
+    pub list_scroll: gtk::ScrolledWindow,
+    detail_scroll: gtk::ScrolledWindow,
+    status: gtk::Label,
+    toast_box: gtk::Box,
+    toast_serial: Cell<u64>,
+    pub selected: RefCell<Vec<String>>,
+    pub narrow: Cell<bool>,
+    pub showing_detail: Cell<bool>,
+    pub rebuilding: Cell<bool>,
+    pub editor: RefCell<Option<gtk::Window>>,
+}
+thread_local! {static UI:RefCell<Option<Ui>>=const{RefCell::new(None)};}
+pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<Ui> {
+    if let Some(ui) = UI.with(|u| u.borrow().clone()) {
+        if let Some(s) = section {
+            navigate(&ui, s);
+        }
+        ui.window.present();
+        return Ok(ui);
+    }
+    let store = Store::open(&nixe_core::paths::data_dir().join("contacts.db"))?;
+    let book = store.load()?;
+    theme::install();
+    install_icons();
+    let window = gtk::ApplicationWindow::builder().application(app).default_width(1120).default_height(800).build();
+    window.add_css_class("contacts-window");
+    window.set_icon_name(Some("io.github.design_nexus.nixe.Contacts"));
+    window.set_titlebar(Some(&w::hbox(0)));
+    let overlay = gtk::Overlay::new();
+    let frame = w::vbox(0);
+    frame.add_css_class("window-frame");
+    let body = w::hbox(0);
+    body.set_vexpand(true);
+    frame.append(&body);
+    overlay.set_child(Some(&frame));
+    window.set_child(Some(&overlay));
+    let sidebar = w::vbox(0);
+    sidebar.set_hexpand(false);
+    sidebar.add_css_class("settings-navigation");
+    let head = chrome::sidebar_head("Contacts", Some("Find (Ctrl+F)"));
+    sidebar.append(&head.root);
+    let nav = w::vbox(0);
+    nav.set_hexpand(false);
+    let nav_scroll = gtk::ScrolledWindow::builder()
+        .vexpand(true)
+        .hexpand(false)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .child(&nav)
+        .build();
+    sidebar.append(&nav_scroll);
+    body.append(&sidebar);
+    let page = w::vbox(0);
+    page.add_css_class("settings-content");
+    page.set_hexpand(true);
+    body.append(&page);
+    let search = gtk::SearchEntry::new();
+    search.set_placeholder_text(Some("Search contacts…"));
+    search.set_visible(false);
+    page.append(&chrome::search_strip(&search));
+    let toolbar = w::hbox(6);
+    toolbar.add_css_class("toolbar");
+    page.append(&toolbar);
+    let new = button("New contact", "New contact (Ctrl+N)");
+    new.add_css_class("suggested-action");
+    new.set_child(Some(&action_content("contact-new-symbolic", "New contact")));
+    toolbar.append(&new);
+    let edit = w::bar_button("document-edit-symbolic", "Edit selected contact");
+    toolbar.append(&edit);
+    let spacer = w::hbox(0);
+    spacer.set_hexpand(true);
+    toolbar.append(&spacer);
+    let menu = gtk::MenuButton::builder().icon_name("view-more-symbolic").tooltip_text("Contact actions").build();
+    let pop = gtk::Popover::new();
+    pop.add_css_class("menu-popover");
+    let actions = w::vbox(4);
+    pop.set_child(Some(&actions));
+    menu.add_css_class("bar-button");
+    menu.set_popover(Some(&pop));
+    toolbar.append(&menu);
+    let panes = w::hbox(0);
+    panes.set_vexpand(true);
+    page.append(&panes);
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::Multiple);
+    list.add_css_class("contact-list");
+    let list_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .vexpand(true)
+        .child(&list)
+        .build();
+    list_scroll.set_width_request(280);
+    panes.append(&list_scroll);
+    let details = w::vbox(12);
+    details.add_css_class("contact-details");
+    let detail_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .hexpand(true)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .vexpand(true)
+        .child(&details)
+        .build();
+    panes.append(&detail_scroll);
+    let statusbar = w::hbox(16);
+    statusbar.add_css_class("status-bar");
+    let shortcuts = gtk::Button::new();
+    shortcuts.add_css_class("status-help");
+    shortcuts.set_tooltip_text(Some("Show the keyboard shortcuts (F1)"));
+    let help_content = w::hbox(10);
+    help_content.append(&w::label("F1", "status-key"));
+    help_content.append(&w::label("Shortcuts", ""));
+    shortcuts.set_child(Some(&help_content));
+    statusbar.append(&shortcuts);
+    let status = w::label("", "status-readout");
+    status.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    status.set_hexpand(true);
+    status.set_xalign(1.0);
+    statusbar.append(&status);
+    statusbar.append(&chrome::gear(settings));
+    frame.append(&statusbar);
+    let toast_box = w::hbox(10);
+    toast_box.add_css_class("toast");
+    toast_box.set_halign(gtk::Align::Center);
+    toast_box.set_valign(gtk::Align::End);
+    toast_box.set_margin_bottom(48);
+    toast_box.set_visible(false);
+    overlay.add_overlay(&toast_box);
+    let start = section.map(str::to_string).unwrap_or_else(|| nixe_theme::start_page("all", &prefs::get().last_section));
+    let ui = Rc::new(State {
+        window,
+        overlay,
+        book: RefCell::new(book),
+        store: RefCell::new(store),
+        section: RefCell::new(start),
+        list,
+        details,
+        search,
+        nav,
+        head: head.root,
+        sidebar,
+        list_scroll,
+        detail_scroll,
+        status,
+        toast_box,
+        toast_serial: Cell::new(0),
+        selected: RefCell::new(vec![]),
+        narrow: Cell::new(false),
+        showing_detail: Cell::new(false),
+        rebuilding: Cell::new(false),
+        editor: RefCell::new(None),
+    });
+    UI.with(|u| *u.borrow_mut() = Some(ui.clone()));
+    let u = ui.clone();
+    new.connect_clicked(move |_| editor::open(&u, None));
+    let u = ui.clone();
+    edit.connect_clicked(move |_| edit_selected(&u));
+    let u = ui.clone();
+    head.toggle.connect_clicked(move |_| {
+        prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
+        layout(&u);
+    });
+    if let Some(b) = head.search {
+        let u = ui.clone();
+        b.connect_clicked(move |_| find(&u));
+    }
+    let u = ui.clone();
+    ui.search.connect_search_changed(move |_| refresh(&u));
+    let u = ui.clone();
+    ui.list.connect_selected_rows_changed(move |list| {
+        if u.rebuilding.get() {
+            return;
+        }
+        *u.selected.borrow_mut() = list.selected_rows().iter().map(|r| r.widget_name().to_string()).collect();
+        u.showing_detail.set(!u.selected.borrow().is_empty());
+        self::details(&u);
+        layout(&u);
+    });
+    let u = ui.clone();
+    ui.list.connect_row_activated(move |_, _| edit_selected(&u));
+    let u = ui.clone();
+    let last_width = Cell::new(0);
+    ui.window.add_tick_callback(move |win, _| {
+        if last_width.replace(win.width()) != win.width() {
+            layout(&u);
+        }
+        glib::ControlFlow::Continue
+    });
+    for (label, run) in [
+        ("Import contacts…", 0),
+        ("Export selected / view as vCard…", 1),
+        ("Export selected / view as CSV…", 2),
+        ("Add selected to list…", 3),
+        ("Remove selected from this list", 4),
+        ("Delete selected", 5),
+        ("Rename this list…", 6),
+        ("Delete this list", 7),
+        ("Email this list", 8),
+    ] {
+        let b = button(label, label);
+        b.add_css_class("menu-item");
+        b.add_css_class("flat");
+        actions.append(&b);
+        let u = ui.clone();
+        let p = pop.clone();
+        b.connect_clicked(move |_| {
+            p.popdown();
+            match run {
+                0 => transfer::choose_import(&u),
+                1 => transfer::export(&u, false),
+                2 => transfer::export(&u, true),
+                3 => membership(&u),
+                4 => remove_members(&u),
+                5 => delete(&u),
+                6 => rename_list(&u),
+                7 => delete_list(&u),
+                _ => email_list(&u),
+            }
+        });
+    }
+    shortcuts.connect_clicked(|_| show_shortcuts());
+    nixe_ui::keys::install(
+        &ui.window,
+        nixe_ui::keys::Common { settings: Some(settings), shortcuts: Some(show_shortcuts), close: true, ..Default::default() },
+    );
+    let keys = gtk::EventControllerKey::new();
+    let u = ui.clone();
+    keys.connect_key_pressed(move |_, key, _, mods| {
+        let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
+        match key {
+            gdk::Key::f | gdk::Key::F if ctrl => find(&u),
+            gdk::Key::n | gdk::Key::N if ctrl => editor::open(&u, None),
+            gdk::Key::b | gdk::Key::B if ctrl => {
+                prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
+                layout(&u);
+            }
+            gdk::Key::F1 => show_shortcuts(),
+            gdk::Key::Escape => {
+                if nixe_ui::settings_card::is_open() {
+                    nixe_ui::settings_card::escape();
+                } else {
+                    u.search.set_text("");
+                    u.search.set_visible(false);
+                    u.showing_detail.set(false);
+                    layout(&u);
+                }
+            }
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    });
+    ui.window.add_controller(keys);
+    let u = ui.clone();
+    ui.window.connect_close_request(move |_| {
+        if let Some(e) = u.editor.borrow().as_ref() {
+            e.present();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    refresh(&ui);
+    let s = ui.section.borrow().clone();
+    navigate(&ui, &s);
+    ui.window.present();
+    if prefs::take_broken() {
+        toast(&ui, "Settings could not be read. The original is kept as settings.toml.bak.");
+    }
+    if let Some(path) = std::env::var_os("CONTACTS_SNAPSHOT") {
+        ui.window.set_default_size(800, 700);
+        let u = ui.clone();
+        let app = app.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+            if let Some(child) = u.window.child() {
+                let paintable = gtk::WidgetPaintable::new(Some(&child));
+                let (width, height) = (child.width(), child.height());
+                let snapshot = gtk::Snapshot::new();
+                if let Ok(bg) = gdk::RGBA::parse(theme::current_palette().bg.as_str()) {
+                    snapshot.append_color(&bg, &gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
+                }
+                paintable.snapshot(&snapshot, width as f64, height as f64);
+                if let (Some(node), Some(renderer)) = (snapshot.to_node(), u.window.renderer()) {
+                    let texture = renderer.render_texture(node, None);
+                    match texture.save_to_png(std::path::Path::new(&path)) {
+                        Ok(()) => println!(
+                            "Contacts snapshot: {width} × {height}, sidebar {} px, list {} px, details {} px",
+                            u.sidebar.width(),
+                            u.list_scroll.width(),
+                            u.detail_scroll.width()
+                        ),
+                        Err(e) => eprintln!("Snapshot: {e}"),
+                    }
+                }
+            }
+            app.quit();
+        });
+    }
+    Ok(ui)
+}
+fn install_icons() {
+    let dir = nixe_core::paths::cache_dir().join("icons");
+    let _ = std::fs::create_dir_all(&dir);
+    for (name, svg) in [
+        ("contact-new-symbolic.svg", include_str!("../data/icons/contact-new-symbolic.svg")),
+        ("contact-book-symbolic.svg", include_str!("../data/icons/contact-book-symbolic.svg")),
+    ] {
+        let _ = std::fs::write(dir.join(name), svg);
+    }
+    if let Some(display) = gdk::Display::default() {
+        gtk::IconTheme::for_display(&display).add_search_path(&dir);
+    }
+}
+fn action_content(icon: &str, title: &str) -> gtk::Box {
+    let row = w::hbox(8);
+    row.append(&gtk::Image::from_icon_name(icon));
+    row.append(&gtk::Label::new(Some(title)));
+    row
+}
+pub fn button(label: &str, tip: &str) -> gtk::Button {
+    let b = gtk::Button::with_label(label);
+    b.set_tooltip_text(Some(tip));
+    b
+}
+pub fn clear(b: &gtk::Box) {
+    while let Some(c) = b.first_child() {
+        b.remove(&c);
+    }
+}
+pub fn label(text: &str, class: &str) -> gtk::Label {
+    let l = w::label(text, class);
+    l.set_xalign(0.0);
+    l.set_wrap(true);
+    l.set_selectable(true);
+    l
+}
+pub fn scroll(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .vexpand(true)
+        .child(child)
+        .build()
+}
+pub fn commit(ui: &Ui, book: Book) -> bool {
+    match ui.store.borrow_mut().save(&book) {
+        Ok(()) => {
+            *ui.book.borrow_mut() = book;
+            refresh(ui);
+            true
+        }
+        Err(e) => {
+            toast(ui, &format!("Could not save: {e:#}"));
+            false
+        }
+    }
+}
+pub fn navigate(ui: &Ui, section: &str) {
+    if section == "settings" {
+        settings();
+        return;
+    }
+    let valid = matches!(section, "all" | "favorites" | "duplicates") || ui.book.borrow().lists.iter().any(|l| l.id == section);
+    *ui.section.borrow_mut() = if valid { section.into() } else { "all".into() };
+    ui.selected.borrow_mut().clear();
+    ui.showing_detail.set(false);
+    prefs::update(|p| p.last_section = ui.section.borrow().clone());
+    refresh(ui);
+}
+pub fn visible(ui: &Ui) -> Vec<Contact> {
+    let book = ui.book.borrow();
+    let section = ui.section.borrow();
+    let query = ui.search.text();
+    let mut result: Vec<_> = book
+        .contacts
+        .iter()
+        .filter(|c| {
+            (match section.as_str() {
+                "all" => true,
+                "favorites" => c.favorite,
+                "duplicates" => book.contacts.iter().any(|o| o.id != c.id && model::duplicates(c, o)),
+                id => book.lists.iter().find(|l| l.id == id).is_some_and(|l| l.members.contains(&c.id)),
+            }) && c.matches(&query)
+        })
+        .cloned()
+        .collect();
+    let p = prefs::get();
+    result.sort_by_key(|c| {
+        let key = if p.sort_last { format!("{} {}", c.last, c.first) } else { format!("{} {}", c.first, c.last) };
+        if key.trim().is_empty() { c.name(p.last_first).to_lowercase() } else { key.to_lowercase() }
+    });
+    result
+}
+pub fn chosen(ui: &Ui) -> Vec<Contact> {
+    let selected = ui.selected.borrow();
+    if selected.is_empty() {
+        visible(ui)
+    } else {
+        ui.book.borrow().contacts.iter().filter(|c| selected.contains(&c.id)).cloned().collect()
+    }
+}
+pub fn refresh(ui: &Ui) {
+    ui.rebuilding.set(true);
+    while let Some(c) = ui.list.first_child() {
+        ui.list.remove(&c);
+    }
+    let contacts = visible(ui);
+    let p = prefs::get();
+    let selected = ui.selected.borrow().clone();
+    let alive: Vec<_> = selected.into_iter().filter(|id| contacts.iter().any(|c| c.id == *id)).collect();
+    *ui.selected.borrow_mut() = alive.clone();
+    for c in &contacts {
+        let row = gtk::ListBoxRow::new();
+        row.set_widget_name(&c.id);
+        let b = w::vbox(2);
+        b.set_margin_top(8);
+        b.set_margin_bottom(8);
+        b.set_margin_start(14);
+        b.set_margin_end(14);
+        let heading = w::hbox(8);
+        let name = gtk::Label::new(Some(&c.name(p.last_first)));
+        name.set_hexpand(true);
+        name.add_css_class("contact-row-name");
+        name.set_xalign(0.0);
+        name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        heading.append(&name);
+        if c.favorite {
+            let star = gtk::Image::from_icon_name("starred-symbolic");
+            star.add_css_class("accent");
+            heading.append(&star);
+        }
+        b.append(&heading);
+        let sub = gtk::Label::new(Some(if c.company.is_empty() {
+            c.emails.first().map(|f| f.value.as_str()).unwrap_or("")
+        } else {
+            &c.company
+        }));
+        sub.add_css_class("dim");
+        sub.add_css_class("contact-row-description");
+        sub.set_xalign(0.0);
+        sub.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        b.append(&sub);
+        row.set_child(Some(&b));
+        ui.list.append(&row);
+        if alive.contains(&c.id) {
+            ui.list.select_row(Some(&row));
+        }
+    }
+    if contacts.is_empty() {
+        let empty = w::vbox(12);
+        empty.add_css_class("contact-empty");
+        empty.set_margin_top(80);
+        empty.set_halign(gtk::Align::Center);
+        let icon = gtk::Image::from_icon_name("contact-book-symbolic");
+        icon.set_pixel_size(32);
+        icon.add_css_class("dim");
+        icon.set_halign(gtk::Align::Center);
+        empty.append(&icon);
+        empty.set_margin_start(20);
+        empty.set_margin_end(20);
+        empty.append(&label(if ui.search.text().is_empty() { "No contacts here yet." } else { "No matching contacts." }, "dim"));
+        let b = button("New contact", "New contact (Ctrl+N)");
+        let u = ui.clone();
+        b.connect_clicked(move |_| editor::open(&u, None));
+        empty.append(&b);
+        let b = button("Import contacts…", "Import vCard or CSV contacts");
+        let u = ui.clone();
+        b.connect_clicked(move |_| transfer::choose_import(&u));
+        empty.append(&b);
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("contact-empty-row");
+        row.set_selectable(false);
+        row.set_activatable(false);
+        row.set_child(Some(&empty));
+        ui.list.append(&row);
+    }
+    ui.rebuilding.set(false);
+    nav(ui);
+    details(ui);
+    ui.status.set_text(&format!("{} contacts · {} selected", contacts.len(), alive.len()));
+    layout(ui);
+}
+// Match PDF's navigation structure; shared CSS owns the sidebar dimensions.
+fn nav_button(icon: &str, title: &str, tooltip: &str) -> (gtk::Button, gtk::Label) {
+    let button = gtk::Button::new();
+    button.add_css_class("nav-item");
+    let content = w::hbox(12);
+    content.append(&gtk::Image::from_icon_name(icon));
+    let text = w::label(title, "nav-label");
+    text.set_hexpand(true);
+    text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    text.add_css_class("compact-hide");
+    content.append(&text);
+    button.set_child(Some(&content));
+    button.set_tooltip_text(Some(tooltip));
+    (button, text)
+}
+fn nav_group(ui: &Ui, title: &str, first: bool) {
+    let heading = w::label(title, "nav-group");
+    heading.add_css_class("compact-hide");
+    if first {
+        heading.add_css_class("first");
+    }
+    ui.nav.append(&heading);
+}
+fn nav(ui: &Ui) {
+    clear(&ui.nav);
+    let book = ui.book.borrow();
+    let mut items = vec![
+        ("all".into(), "All contacts".into(), "contact-book-symbolic", book.contacts.len()),
+        ("favorites".into(), "Favorites".into(), "starred-symbolic", book.contacts.iter().filter(|c| c.favorite).count()),
+        (
+            "duplicates".into(),
+            "Duplicates".into(),
+            "edit-copy-symbolic",
+            book.contacts.iter().filter(|c| book.contacts.iter().any(|o| o.id != c.id && model::duplicates(c, o))).count(),
+        ),
+    ];
+    for l in &book.lists {
+        items.push((l.id.clone(), l.name.clone(), "view-list-symbolic", l.members.len()));
+    }
+    nav_group(ui, "CONTACTS", true);
+    for (i, (id, name, icon, count)) in items.into_iter().enumerate() {
+        if i == 3 {
+            nav_group(ui, "LISTS", false);
+        }
+        let (b, _) = nav_button(icon, &name, &name);
+        let count = w::label(&count.to_string(), "nav-readout");
+        count.add_css_class("compact-hide");
+        if let Some(line) = b.child().and_downcast::<gtk::Box>() {
+            line.append(&count);
+        }
+        if id == *ui.section.borrow() {
+            b.add_css_class("active");
+            chrome::set_title(&ui.window, "Contacts", &name);
+        }
+        let u = ui.clone();
+        b.connect_clicked(move |_| navigate(&u, &id));
+        ui.nav.append(&b);
+    }
+    if book.lists.is_empty() {
+        nav_group(ui, "LISTS", false);
+    }
+    let (add, _) = nav_button("list-add-symbolic", "New list", "Create a contact list");
+    add.add_css_class("nav-add");
+    let u = ui.clone();
+    add.connect_clicked(move |_| {
+        let u = u.clone();
+        w::ask_text("New list", "Organize contacts without making copies.", "", "Create", move |name| {
+            let mut book = u.book.borrow().clone();
+            let id = model::id();
+            book.lists.push(model::List { id: id.clone(), name, members: Default::default() });
+            if commit(&u, book) {
+                navigate(&u, &id);
+            }
+        });
+    });
+    ui.nav.append(&add);
+}
+fn layout(ui: &Ui) {
+    let width = if ui.window.width() > 0 { ui.window.width() } else { ui.window.default_width() };
+    let narrow = width > 0 && width < 980;
+    nixe_ui::settings_card::fit(&ui.window);
+    ui.narrow.set(narrow);
+    let compact = narrow || prefs::get().sidebar_collapsed;
+    if compact {
+        ui.sidebar.add_css_class("compact");
+    } else {
+        ui.sidebar.remove_css_class("compact");
+    }
+    chrome::set_head_compact(&ui.head, compact);
+    fn hide(root: &gtk::Widget, compact: bool) {
+        if root.has_css_class("nav-item") {
+            if let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child()) {
+                content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
+            }
+        }
+        if root.has_css_class("compact-hide") {
+            root.set_visible(!compact);
+        }
+        let mut child = root.first_child();
+        while let Some(c) = child {
+            hide(&c, compact);
+            child = c.next_sibling();
+        }
+    }
+    hide(ui.nav.upcast_ref(), compact);
+    let empty = visible(ui).is_empty();
+    ui.list_scroll.set_hexpand(narrow || empty);
+    ui.list_scroll.set_visible(empty || !narrow || !ui.showing_detail.get());
+    ui.detail_scroll.set_visible(!empty && (!narrow || ui.showing_detail.get()));
+    if let Some(back) = ui.details.first_child() {
+        back.set_visible(narrow);
+    }
+    ui.list_scroll.set_width_request(if narrow || empty { -1 } else { 280 });
+}
+fn details(ui: &Ui) {
+    clear(&ui.details);
+    let ids = ui.selected.borrow().clone();
+    {
+        let b = w::labeled_button("go-previous-symbolic", "Contacts");
+        b.set_tooltip_text(Some("Back to contacts (Esc)"));
+        b.set_halign(gtk::Align::Start);
+        b.set_visible(ui.narrow.get());
+        let u = ui.clone();
+        b.connect_clicked(move |_| {
+            u.showing_detail.set(false);
+            layout(&u);
+        });
+        ui.details.append(&b);
+    }
+    if ids.len() != 1 {
+        let empty = w::vbox(12);
+        empty.add_css_class("contact-empty");
+        empty.set_valign(gtk::Align::Center);
+        empty.set_halign(gtk::Align::Center);
+        empty.set_vexpand(true);
+        let icon = gtk::Image::from_icon_name("contact-book-symbolic");
+        icon.set_pixel_size(40);
+        icon.add_css_class("dim");
+        empty.append(&icon);
+        let message = label(
+            if ids.is_empty() {
+                "Select a contact to see their details."
+            } else {
+                "Multiple contacts selected. Use the actions menu to export, organize, or delete them."
+            },
+            "dim",
+        );
+        message.set_max_width_chars(36);
+        message.set_justify(gtk::Justification::Center);
+        empty.append(&message);
+        ui.details.append(&empty);
+        return;
+    }
+    let Some(c) = ui.book.borrow().contacts.iter().find(|c| c.id == ids[0]).cloned() else { return };
+    let header = w::hbox(14);
+    header.append(&avatar(&c, 48));
+    let identity = w::vbox(4);
+    identity.set_hexpand(true);
+    identity.append(&label(&c.name(prefs::get().last_first), "contact-name"));
+    header.append(&identity);
+    ui.details.append(&header);
+    if !c.company.is_empty() || !c.title.is_empty() {
+        identity.append(&label(
+            &[c.title.as_str(), c.company.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
+            "dim",
+        ));
+    }
+    let bar = w::hbox(6);
+    let favorite = w::labeled_button(if c.favorite { "starred-symbolic" } else { "non-starred-symbolic" }, "Favorite");
+    favorite.set_tooltip_text(Some("Toggle favorite"));
+    if c.favorite {
+        favorite.add_css_class("suggested-action");
+    }
+    let u = ui.clone();
+    let id = c.id.clone();
+    favorite.connect_clicked(move |_| {
+        let mut book = u.book.borrow().clone();
+        if let Some(c) = book.contacts.iter_mut().find(|c| c.id == id) {
+            c.favorite = !c.favorite;
+        }
+        commit(&u, book);
+    });
+    bar.append(&favorite);
+    let edit = button("Edit", "Edit selected contact");
+    let u = ui.clone();
+    edit.connect_clicked(move |_| edit_selected(&u));
+    bar.append(&edit);
+    ui.details.append(&bar);
+    for (title, fields, scheme) in [
+        ("EMAIL", &c.emails, "mailto:"),
+        ("PHONE", &c.phones, "tel:"),
+        ("ADDRESS", &c.addresses, ""),
+        ("WEBSITE", &c.websites, ""),
+    ] {
+        if fields.is_empty() {
+            continue;
+        }
+        ui.details.append(&label(title, "group-title"));
+        let rows = w::vbox(0);
+        rows.add_css_class("group-list");
+        ui.details.append(&rows);
+        for f in fields {
+            let actions = w::hbox(4);
+            let copy = w::bar_button("edit-copy-symbolic", "Copy value");
+            let value = f.value.clone();
+            let win = ui.window.clone();
+            copy.connect_clicked(move |_| win.clipboard().set_text(&value));
+            actions.append(&copy);
+            if title != "ADDRESS" {
+                let open = w::bar_button("external-link-symbolic", "Open using the default app");
+                let value = f.value.clone();
+                let u = ui.clone();
+                open.connect_clicked(move |_| {
+                    let uri = if title == "WEBSITE" {
+                        if value.starts_with("https://") || value.starts_with("http://") {
+                            value.clone()
+                        } else {
+                            format!("https://{value}")
+                        }
+                    } else {
+                        format!(
+                            "{scheme}{}",
+                            if scheme == "mailto:" {
+                                glib::uri_escape_string(&value, Some("@+"), false).to_string()
+                            } else {
+                                value.clone()
+                            }
+                        )
+                    };
+                    launch(&u, &uri);
+                });
+                actions.append(&open);
+            }
+            rows.append(&w::row(&f.value, &f.label, Some(actions.upcast_ref())));
+        }
+    }
+    for (title, text) in [("BIRTHDAY", &c.birthday), ("NOTES", &c.notes)] {
+        if !text.is_empty() {
+            ui.details.append(&label(title, "contact-heading"));
+            ui.details.append(&label(text, ""));
+        }
+    }
+    let lists = ui
+        .book
+        .borrow()
+        .lists
+        .iter()
+        .filter(|l| l.members.contains(&c.id))
+        .map(|l| l.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !lists.is_empty() {
+        ui.details.append(&label("LISTS", "contact-heading"));
+        ui.details.append(&label(&lists, "dim"));
+    }
+    if *ui.section.borrow() == "duplicates" {
+        let others: Vec<_> =
+            ui.book.borrow().contacts.iter().filter(|o| o.id != c.id && model::duplicates(&c, o)).cloned().collect();
+        ui.details.append(&label("POSSIBLE DUPLICATES", "contact-heading"));
+        for other in others {
+            let b = button(&format!("Review merge with {}", other.name(false)), "Review fields before merging");
+            let u = ui.clone();
+            let a = c.clone();
+            b.connect_clicked(move |_| editor::review_merge(&u, &a, &other));
+            ui.details.append(&b);
+        }
+    }
+}
+pub fn avatar(c: &Contact, size: i32) -> gtk::Widget {
+    if !c.photo.is_empty() {
+        if let Ok(t) = gdk::Texture::from_bytes(&glib::Bytes::from(&c.photo[..])) {
+            let p = gtk::Picture::for_paintable(&t);
+            p.set_size_request(size, size);
+            p.set_content_fit(gtk::ContentFit::Contain);
+            p.set_halign(gtk::Align::Start);
+            return p.upcast();
+        }
+    }
+    let initials = c.name(false).split_whitespace().take(2).filter_map(|s| s.chars().next()).collect::<String>().to_uppercase();
+    let l = gtk::Label::new(Some(&initials));
+    l.add_css_class("contact-avatar");
+    l.set_size_request(size, size);
+    l.set_halign(gtk::Align::Start);
+    l.upcast()
+}
+fn find(ui: &Ui) {
+    ui.search.set_visible(true);
+    ui.search.grab_focus();
+}
+fn edit_selected(ui: &Ui) {
+    let id = ui.selected.borrow().first().cloned();
+    if let Some(id) = id {
+        let c = ui.book.borrow().contacts.iter().find(|c| c.id == id).cloned();
+        editor::open(ui, c);
+    }
+}
+pub fn toast(ui: &Ui, text: &str) {
+    toast_action(ui, text, None);
+}
+pub fn toast_action(ui: &Ui, text: &str, action: Option<(&str, Box<dyn Fn()>)>) {
+    clear(&ui.toast_box);
+    let l = label(text, "");
+    l.set_max_width_chars(65);
+    ui.toast_box.append(&l);
+    if let Some((name, run)) = action {
+        let b = button(name, name);
+        let u = ui.clone();
+        b.connect_clicked(move |_| {
+            run();
+            u.toast_box.set_visible(false);
+        });
+        ui.toast_box.append(&b);
+    }
+    ui.toast_box.set_visible(true);
+    let serial = ui.toast_serial.get() + 1;
+    ui.toast_serial.set(serial);
+    let weak = Rc::downgrade(ui);
+    glib::timeout_add_local_once(std::time::Duration::from_secs(8), move || {
+        if let Some(u) = weak.upgrade() {
+            if u.toast_serial.get() == serial {
+                u.toast_box.set_visible(false);
+            }
+        }
+    });
+}
+fn delete(ui: &Ui) {
+    let ids = ui.selected.borrow().clone();
+    if ids.is_empty() {
+        toast(ui, "Select contacts to delete.");
+        return;
+    }
+    let old = ui.book.borrow().clone();
+    let mut next = old.clone();
+    next.contacts.retain(|c| !ids.contains(&c.id));
+    for l in &mut next.lists {
+        l.members.retain(|id| !ids.contains(id));
+    }
+    if commit(ui, next) {
+        let u = ui.clone();
+        toast_action(
+            ui,
+            &format!("Deleted {} contacts.", ids.len()),
+            Some((
+                "Undo",
+                Box::new(move || {
+                    let mut next = u.book.borrow().clone();
+                    for c in old.contacts.iter().filter(|c| ids.contains(&c.id)) {
+                        if !next.contacts.iter().any(|x| x.id == c.id) {
+                            next.contacts.push(c.clone());
+                        }
+                    }
+                    for l in &mut next.lists {
+                        if let Some(prior) = old.lists.iter().find(|p| p.id == l.id) {
+                            for id in prior.members.iter().filter(|id| ids.contains(id)) {
+                                l.members.insert(id.clone());
+                            }
+                        }
+                    }
+                    commit(&u, next);
+                }),
+            )),
+        )
+    }
+}
+fn membership(ui: &Ui) {
+    let ids = ui.selected.borrow().clone();
+    if ids.is_empty() {
+        toast(ui, "Select contacts to add to a list.");
+        return;
+    }
+    let (dialog, card) = w::dialog("Add to list", 400);
+    let lists = ui.book.borrow().lists.clone();
+    if lists.is_empty() {
+        card.append(&label("Create a list using the + button in the sidebar first.", "dim"));
+    }
+    for l in lists {
+        let b = button(&l.name, "Add selected contacts to this list");
+        card.append(&b);
+        let u = ui.clone();
+        let d = dialog.clone();
+        let ids = ids.clone();
+        b.connect_clicked(move |_| {
+            let mut book = u.book.borrow().clone();
+            if let Some(list) = book.lists.iter_mut().find(|x| x.id == l.id) {
+                list.members.extend(ids.clone());
+            }
+            if commit(&u, book) {
+                d.close();
+            }
+        });
+    }
+    dialog.present();
+}
+fn remove_members(ui: &Ui) {
+    let ids = ui.selected.borrow().clone();
+    let section = ui.section.borrow().clone();
+    let mut book = ui.book.borrow().clone();
+    if let Some(l) = book.lists.iter_mut().find(|l| l.id == section) {
+        l.members.retain(|id| !ids.contains(id));
+        commit(ui, book);
+    } else {
+        toast(ui, "Open a contact list first.");
+    }
+}
+fn rename_list(ui: &Ui) {
+    let section = ui.section.borrow().clone();
+    let list = ui.book.borrow().lists.iter().find(|l| l.id == section).cloned();
+    if let Some(l) = list {
+        let u = ui.clone();
+        w::ask_text("Rename list", "", &l.name, "Rename", move |name| {
+            let mut book = u.book.borrow().clone();
+            if let Some(l) = book.lists.iter_mut().find(|l| l.id == section) {
+                l.name = name;
+            }
+            commit(&u, book);
+        });
+    } else {
+        toast(ui, "Open a contact list first.");
+    }
+}
+fn delete_list(ui: &Ui) {
+    let section = ui.section.borrow().clone();
+    let mut book = ui.book.borrow().clone();
+    let Some(l) = book.lists.iter().find(|l| l.id == section).cloned() else {
+        toast(ui, "Open a contact list first.");
+        return;
+    };
+    book.lists.retain(|l| l.id != section);
+    if commit(ui, book) {
+        navigate(ui, "all");
+        let u = ui.clone();
+        toast_action(
+            ui,
+            "List deleted. Contacts kept.",
+            Some((
+                "Undo",
+                Box::new(move || {
+                    let mut book = u.book.borrow().clone();
+                    let mut l = l.clone();
+                    l.members.retain(|id| book.contacts.iter().any(|c| c.id == *id));
+                    book.lists.push(l);
+                    commit(&u, book);
+                }),
+            )),
+        )
+    }
+}
+fn email_list(ui: &Ui) {
+    let section = ui.section.borrow().clone();
+    let book = ui.book.borrow();
+    let Some(list) = book.lists.iter().find(|l| l.id == section) else {
+        toast(ui, "Open a contact list first.");
+        return;
+    };
+    let mut emails = std::collections::BTreeSet::new();
+    for c in book.contacts.iter().filter(|c| list.members.contains(&c.id)) {
+        if let Some(e) = c.emails.first() {
+            emails.insert(glib::uri_escape_string(&e.value, Some("@+"), false).to_string());
+        }
+    }
+    if emails.is_empty() {
+        toast(ui, "This list has no email addresses.");
+    } else {
+        launch(ui, &format!("mailto:{}", emails.into_iter().collect::<Vec<_>>().join(",")));
+    }
+}
+pub fn launch(ui: &Ui, uri: &str) {
+    if let Err(e) = gtk::gio::AppInfo::launch_default_for_uri(uri, None::<&gtk::gio::AppLaunchContext>) {
+        toast(ui, &format!("Could not open: {e}"));
+    }
+}
+pub const SHORTCUTS: &[(&[&str], &str)] = &[
+    (&["Ctrl", "N"], "New contact"),
+    (&["Ctrl", "S"], "Save contact in the editor"),
+    (&["Ctrl", "F"], "Search contacts"),
+    (&["Ctrl", "B"], "Collapse sidebar"),
+    (&["Ctrl", ","], "Settings"),
+    (&["Ctrl", "Shift", "P"], "Command palette"),
+    (&["Esc"], "Close search, card, or return to contacts"),
+    (&["F1"], "Show these shortcuts (or ?)"),
+    (&["Ctrl", "Q"], "Quit Contacts"),
+    (&["Ctrl", "W"], "Close window"),
+];
+
+pub fn show_shortcuts() {
+    let (dialog, card) = w::dialog("Keyboard shortcuts", 520);
+    let list = w::vbox(0);
+    list.add_css_class("group-list");
+    for (keys, action) in SHORTCUTS {
+        list.append(&w::row(action, "", Some(w::key_caps(keys).upcast_ref())));
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .propagate_natural_height(true)
+        .max_content_height(560)
+        .child(&list)
+        .build();
+    card.append(&scroll);
+    let close = button("Close", "Close shortcuts (Esc)");
+    close.set_halign(gtk::Align::End);
+    let d = dialog.clone();
+    close.connect_clicked(move |_| d.close());
+    card.append(&close);
+    dialog.present();
+}
+pub fn settings() {
+    let Some(ui) = UI.with(|u| u.borrow().clone()) else { return };
+    super::editor::settings(&ui);
+}

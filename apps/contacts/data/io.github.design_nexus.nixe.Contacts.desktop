@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Contacts
+GenericName=Address Book
+Comment=Manage contacts, favorites and lists
+Exec=nixe-contacts %U
+Icon=io.github.design_nexus.nixe.Contacts
+Terminal=false
+Categories=Office;ContactManagement;GTK;
+Keywords=contacts;people;address;book;email;phone;vcard;
+MimeType=text/vcard;text/x-vcard;
+StartupNotify=true
+StartupWMClass=io.github.design_nexus.nixe.Contacts
+SingleMainWindow=true
+DBusActivatable=false
