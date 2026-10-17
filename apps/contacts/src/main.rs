@@ -1,3 +1,4 @@
+mod control;
 mod editor;
 mod formats;
 mod model;
@@ -22,6 +23,8 @@ fn main() -> glib::ExitCode {
         .application_id("io.github.design_nexus.nixe.Contacts")
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
+    // Nixe Assistant looks people up and adds them through this (primary instance only).
+    app.connect_startup(|app| nixe_core::control::serve(app, control::tools(), control::handle));
     app.connect_command_line(|app, cl| {
         let argv: Vec<_> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
         if argv.iter().any(|s| s == "--toggle") {

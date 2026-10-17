@@ -34,6 +34,10 @@ pub struct State {
     pub editor: RefCell<Option<gtk::Window>>,
 }
 thread_local! {static UI:RefCell<Option<Ui>>=const{RefCell::new(None)};}
+/// The open window's state, once `present` has run (the control interface uses it).
+pub fn current() -> Option<Ui> {
+    UI.with(|u| u.borrow().clone())
+}
 pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<Ui> {
     if let Some(ui) = UI.with(|u| u.borrow().clone()) {
         if let Some(s) = section {
