@@ -27,12 +27,11 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|app| nixe_core::control::serve(app, control::tools(), control::handle));
     app.connect_command_line(|app, cl| {
         let argv: Vec<_> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        if argv.iter().any(|s| s == "--toggle") {
-            if let Some(w) = app.active_window() {
+        if argv.iter().any(|s| s == "--toggle")
+            && let Some(w) = app.active_window() {
                 w.close();
                 return glib::ExitCode::SUCCESS;
             }
-        }
         let section = argv.iter().position(|s| s == "--section").and_then(|i| argv.get(i + 1));
         let ui = match ui::present(app, section.map(String::as_str)) {
             Ok(ui) => ui,

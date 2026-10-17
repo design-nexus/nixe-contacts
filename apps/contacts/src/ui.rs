@@ -596,11 +596,10 @@ fn layout(ui: &Ui) {
     }
     chrome::set_head_compact(&ui.head, compact);
     fn hide(root: &gtk::Widget, compact: bool) {
-        if root.has_css_class("nav-item") {
-            if let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child()) {
+        if root.has_css_class("nav-item")
+            && let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child()) {
                 content.set_halign(if compact { gtk::Align::Center } else { gtk::Align::Fill });
             }
-        }
         if root.has_css_class("compact-hide") {
             root.set_visible(!compact);
         }
@@ -775,15 +774,14 @@ fn details(ui: &Ui) {
     }
 }
 pub fn avatar(c: &Contact, size: i32) -> gtk::Widget {
-    if !c.photo.is_empty() {
-        if let Ok(t) = gdk::Texture::from_bytes(&glib::Bytes::from(&c.photo[..])) {
+    if !c.photo.is_empty()
+        && let Ok(t) = gdk::Texture::from_bytes(&glib::Bytes::from(&c.photo[..])) {
             let p = gtk::Picture::for_paintable(&t);
             p.set_size_request(size, size);
             p.set_content_fit(gtk::ContentFit::Contain);
             p.set_halign(gtk::Align::Start);
             return p.upcast();
         }
-    }
     let initials = c.name(false).split_whitespace().take(2).filter_map(|s| s.chars().next()).collect::<String>().to_uppercase();
     let l = gtk::Label::new(Some(&initials));
     l.add_css_class("contact-avatar");
@@ -805,7 +803,9 @@ fn edit_selected(ui: &Ui) {
 pub fn toast(ui: &Ui, text: &str) {
     toast_action(ui, text, None);
 }
-pub fn toast_action(ui: &Ui, text: &str, action: Option<(&str, Box<dyn Fn()>)>) {
+/// A toast's button: its label and what it does.
+pub type ToastAction<'a> = Option<(&'a str, Box<dyn Fn()>)>;
+pub fn toast_action(ui: &Ui, text: &str, action: ToastAction<'_>) {
     clear(&ui.toast_box);
     let l = label(text, "");
     l.set_max_width_chars(65);
@@ -824,11 +824,10 @@ pub fn toast_action(ui: &Ui, text: &str, action: Option<(&str, Box<dyn Fn()>)>) 
     ui.toast_serial.set(serial);
     let weak = Rc::downgrade(ui);
     glib::timeout_add_local_once(std::time::Duration::from_secs(8), move || {
-        if let Some(u) = weak.upgrade() {
-            if u.toast_serial.get() == serial {
+        if let Some(u) = weak.upgrade()
+            && u.toast_serial.get() == serial {
                 u.toast_box.set_visible(false);
             }
-        }
     });
 }
 fn delete(ui: &Ui) {

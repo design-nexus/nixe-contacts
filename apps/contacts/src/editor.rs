@@ -11,7 +11,7 @@ use std::{
 };
 
 struct Fields {
-    rows: Rc<RefCell<Vec<(gtk::Box, gtk::Entry, gtk::TextView)>>>,
+    rows: FieldRows,
 }
 impl Fields {
     fn new(title: &str, values: &[Field], body: &gtk::Box) -> Self {
@@ -44,7 +44,11 @@ impl Fields {
             .collect()
     }
 }
-fn add_field(root: &gtk::Box, rows: &Rc<RefCell<Vec<(gtk::Box, gtk::Entry, gtk::TextView)>>>, f: &Field) {
+/// A field editor's rows: the row, its label entry and its value.
+type FieldRows = Rc<RefCell<Vec<(gtk::Box, gtk::Entry, gtk::TextView)>>>;
+/// The merge card's choices: which field, its picker, and the values offered.
+type Choices = Rc<RefCell<Vec<(usize, gtk::DropDown, Vec<String>)>>>;
+fn add_field(root: &gtk::Box, rows: &FieldRows, f: &Field) {
     let row = w::hbox(6);
     let name = gtk::Entry::new();
     name.set_width_chars(8);
@@ -163,8 +167,8 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
         let c = c_photo.clone();
         let u = u.clone();
         picker.open(Some(&parent), None::<&gtk::gio::Cancellable>, move |result| {
-            if let Ok(file) = result {
-                if let Some(path) = file.path() {
+            if let Ok(file) = result
+                && let Some(path) = file.path() {
                     let load = || -> anyhow::Result<Vec<u8>> {
                         if path.metadata()?.len() > 10 * 1024 * 1024 {
                             anyhow::bail!("Photos must be smaller than 10 MB.");
@@ -187,7 +191,6 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
                         Err(e) => ui::toast(&u, &e.to_string()),
                     }
                 }
-            }
         });
     });
     let entries: Vec<_> = NAMES
@@ -371,7 +374,7 @@ pub fn review_merge(ui: &Ui, a: &Contact, b: &Contact) {
     card.append(&primary);
     let form = w::vbox(8);
     card.append(&ui::scroll(&form));
-    let choices: Rc<RefCell<Vec<(usize, gtk::DropDown, Vec<String>)>>> = Rc::new(RefCell::new(vec![]));
+    let choices: Choices = Rc::new(RefCell::new(vec![]));
     let build: Rc<dyn Fn(bool)> = {
         let form = form.clone();
         let choices = choices.clone();

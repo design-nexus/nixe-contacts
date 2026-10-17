@@ -16,11 +16,10 @@ pub fn choose_import(ui: &Ui) {
     picker.set_default_filter(Some(&filter));
     let u = ui.clone();
     picker.open(Some(&ui.window), None::<&gio::Cancellable>, move |result| {
-        if let Ok(file) = result {
-            if let Some(path) = file.path() {
+        if let Ok(file) = result
+            && let Some(path) = file.path() {
                 import_path(&u, &path);
             }
-        }
     });
 }
 pub fn import_path(ui: &Ui, path: &Path) {
@@ -181,13 +180,12 @@ fn save_export(ui: &Ui, contacts: Vec<model::Contact>, csv: bool) {
         .build();
     let u = ui.clone();
     picker.save(Some(&ui.window), None::<&gio::Cancellable>, move |result| {
-        if let Ok(file) = result {
-            if let Some(path) = file.path() {
+        if let Ok(file) = result
+            && let Some(path) = file.path() {
                 match nixe_core::cmd::atomic_write(&path, &*bytes) {
                     Ok(()) => ui::toast(&u, &format!("Exported {} contacts.", contacts.len())),
                     Err(e) => ui::toast(&u, &format!("Could not export: {e}")),
                 }
             }
-        }
     });
 }
