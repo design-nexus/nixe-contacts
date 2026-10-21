@@ -32,6 +32,10 @@ pub struct State {
     pub showing_detail: Cell<bool>,
     pub rebuilding: Cell<bool>,
     pub editor: RefCell<Option<gtk::Window>>,
+    eds_books: RefCell<Vec<nixe_accounts::eds::AddressBook>>,
+    eds_contacts: RefCell<Vec<Contact>>,
+    eds_ready: Cell<bool>,
+    eds_loading: Cell<bool>,
     /// Ids of contacts sharing an email or phone with another, worked out once per change
     /// to the book.
     dup_ids: RefCell<Option<std::collections::HashSet<String>>>,
@@ -179,6 +183,10 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         showing_detail: Cell::new(false),
         rebuilding: Cell::new(false),
         editor: RefCell::new(None),
+        eds_books: RefCell::new(vec![]),
+        eds_contacts: RefCell::new(vec![]),
+        eds_ready: Cell::new(false),
+        eds_loading: Cell::new(false),
         dup_ids: RefCell::new(None),
     });
     UI.with(|u| *u.borrow_mut() = Some(ui.clone()));
@@ -305,6 +313,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     refresh(&ui);
     let s = ui.section.borrow().clone();
     navigate(&ui, &s);
+    load_eds(&ui);
     ui.window.present();
     if prefs::take_broken() {
         toast(&ui, "Settings could not be read. The original is kept as settings.toml.bak.");
@@ -437,22 +446,122 @@ fn merge_all(ui: &Ui) {
     }
 }
 
+pub fn is_remote(ui: &Ui) -> bool {
+    ui.section.borrow().starts_with("eds:")
+}
+
+fn eds_uid(section: &str) -> Option<&str> {
+    section.strip_prefix("eds:")
+}
+
+fn load_eds(ui: &Ui) {
+    let u = ui.clone();
+    let handle = gtk::gio::spawn_blocking(nixe_accounts::eds::list_address_books);
+    glib::spawn_future_local(async move {
+        match handle.await {
+            Ok(Ok(books)) => {
+                u.eds_ready.set(true);
+                *u.eds_books.borrow_mut() = books;
+            }
+            Ok(Err(nixe_accounts::Error::Unavailable)) => {
+                u.eds_ready.set(false);
+                u.eds_books.borrow_mut().clear();
+            }
+            _ => {
+                u.eds_ready.set(false);
+            }
+        }
+        let section = u.section.borrow().clone();
+        if let Some(uid) = eds_uid(&section)
+            && !u.eds_books.borrow().iter().any(|b| b.uid == uid)
+        {
+            drop(section);
+            navigate(&u, "all");
+            return;
+        }
+        nav(&u);
+        layout(&u);
+    });
+}
+
+fn load_eds_contacts(ui: &Ui, uid: String) {
+    ui.eds_loading.set(true);
+    ui.eds_contacts.borrow_mut().clear();
+    let u = ui.clone();
+    let handle = gtk::gio::spawn_blocking(move || nixe_accounts::eds::list_vcards(&uid));
+    glib::spawn_future_local(async move {
+        let mut contacts = Vec::new();
+        if let Ok(Ok(vcards)) = handle.await {
+            for card in vcards {
+                let mut imported = crate::formats::vcard_read(&card);
+                if let Some(mut c) = imported.contacts.pop() {
+                    if let Some(id) = vcard_uid(&card) {
+                        c.id = id;
+                    }
+                    contacts.push(c);
+                }
+            }
+        }
+        u.eds_loading.set(false);
+        *u.eds_contacts.borrow_mut() = contacts;
+        if is_remote(&u) {
+            refresh(&u);
+        }
+    });
+}
+
+fn vcard_uid(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        line.get(..4).filter(|p| p.eq_ignore_ascii_case("uid:")).map(|_| line[4..].trim().to_string())
+    })
+}
+
+fn lookup(ui: &Ui, id: &str) -> Option<Contact> {
+    if is_remote(ui) {
+        ui.eds_contacts.borrow().iter().find(|c| c.id == id).cloned()
+    } else {
+        ui.book.borrow().contacts.iter().find(|c| c.id == id).cloned()
+    }
+}
+
 pub fn navigate(ui: &Ui, section: &str) {
     if section == "settings" {
         settings();
         return;
     }
-    let valid = matches!(section, "all" | "favorites" | "birthdays" | "duplicates") || ui.book.borrow().lists.iter().any(|l| l.id == section);
+    let eds_ok = eds_uid(section).is_some_and(|uid| ui.eds_books.borrow().iter().any(|b| b.uid == uid));
+    let valid = matches!(section, "all" | "favorites" | "birthdays" | "duplicates" | "online")
+        || ui.book.borrow().lists.iter().any(|l| l.id == section)
+        || eds_ok;
     *ui.section.borrow_mut() = if valid { section.into() } else { "all".into() };
     ui.selected.borrow_mut().clear();
     ui.showing_detail.set(false);
-    prefs::update(|p| p.last_section = ui.section.borrow().clone());
+    if !is_remote(ui) {
+        ui.eds_contacts.borrow_mut().clear();
+        prefs::update(|p| p.last_section = ui.section.borrow().clone());
+    }
+    if let Some(uid) = eds_uid(&ui.section.borrow()) {
+        load_eds_contacts(ui, uid.to_string());
+    }
     refresh(ui);
 }
 pub fn visible(ui: &Ui) -> Vec<Contact> {
     let book = ui.book.borrow();
     let section = ui.section.borrow();
     let query = ui.search.text();
+    if section.as_str() == "online" {
+        return vec![];
+    }
+    if let Some(_uid) = eds_uid(section.as_str()) {
+        let mut result: Vec<_> = ui.eds_contacts.borrow().iter().filter(|c| c.matches(&query)).cloned().collect();
+        let p = prefs::get();
+        result.sort_by_key(|c| {
+            let key = if p.sort_last { format!("{} {}", c.last, c.first) } else { format!("{} {}", c.first, c.last) };
+            if key.trim().is_empty() { c.name(p.last_first).to_lowercase() } else { key.to_lowercase() }
+        });
+        return result;
+    }
     if section.as_str() == "birthdays" {
         // Soonest first, through the coming year.
         return crate::control::upcoming(&book, 366).into_iter().map(|(_, c)| c).filter(|c| c.matches(&query)).collect();
@@ -500,7 +609,6 @@ pub fn refresh(ui: &Ui) {
         Default::default()
     };
     let selected = ui.selected.borrow().clone();
-
     let alive: Vec<_> = selected.into_iter().filter(|id| contacts.iter().any(|c| c.id == *id)).collect();
     *ui.selected.borrow_mut() = alive.clone();
     for c in &contacts {
@@ -537,7 +645,6 @@ pub fn refresh(ui: &Ui) {
         } else {
             &c.company
         })));
-
         sub.add_css_class("dim");
         sub.add_css_class("contact-row-description");
         sub.set_xalign(0.0);
@@ -561,15 +668,17 @@ pub fn refresh(ui: &Ui) {
         empty.append(&icon);
         empty.set_margin_start(20);
         empty.set_margin_end(20);
-        empty.append(&label(if ui.search.text().is_empty() { "No contacts here yet." } else { "No matching contacts." }, "dim"));
-        let b = button("New contact", "New contact (Ctrl+N)");
-        let u = ui.clone();
-        b.connect_clicked(move |_| editor::open(&u, None));
-        empty.append(&b);
-        let b = button("Import contacts…", "Import vCard or CSV contacts");
-        let u = ui.clone();
-        b.connect_clicked(move |_| transfer::choose_import(&u));
-        empty.append(&b);
+        empty.append(&label(&empty_copy(ui), "dim"));
+        if !is_remote(ui) && ui.section.borrow().as_str() != "online" {
+            let b = button("New contact", "New contact (Ctrl+N)");
+            let u = ui.clone();
+            b.connect_clicked(move |_| editor::open(&u, None));
+            empty.append(&b);
+            let b = button("Import contacts…", "Import vCard or CSV contacts");
+            let u = ui.clone();
+            b.connect_clicked(move |_| transfer::choose_import(&u));
+            empty.append(&b);
+        }
         let row = gtk::ListBoxRow::new();
         row.add_css_class("contact-empty-row");
         row.set_selectable(false);
@@ -582,6 +691,26 @@ pub fn refresh(ui: &Ui) {
     details(ui);
     ui.status.set_text(&format!("{} contacts · {} selected", contacts.len(), alive.len()));
     layout(ui);
+}
+fn empty_copy(ui: &Ui) -> String {
+    if !ui.search.text().is_empty() {
+        return "No matching contacts.".into();
+    }
+    if ui.section.borrow().as_str() == "online" {
+        return if ui.eds_ready.get() {
+            "Connect an account in Settings → Online Accounts to see those contacts here.".into()
+        } else {
+            "Install evolution-data-server to sync contacts.".into()
+        };
+    }
+    if is_remote(ui) {
+        return if ui.eds_loading.get() {
+            "Looking for contacts…".into()
+        } else {
+            "No contacts in this account book. They stay on the account; this computer's book is All contacts.".into()
+        };
+    }
+    "No contacts here yet.".into()
 }
 // Match PDF's navigation structure; shared CSS owns the sidebar dimensions.
 fn nav_button(icon: &str, title: &str, tooltip: &str) -> (gtk::Button, gtk::Label) {
@@ -644,6 +773,35 @@ fn nav(ui: &Ui) {
     }
     if book.lists.is_empty() {
         nav_group(ui, "LISTS", false);
+    }
+    let books = ui.eds_books.borrow().clone();
+    nav_group(ui, "ONLINE", false);
+    if books.is_empty() {
+        let (b, _) = nav_button("network-workgroup-symbolic", "Online books", "Contacts from connected accounts");
+        if ui.section.borrow().as_str() == "online" {
+            b.add_css_class("active");
+            chrome::set_title(&ui.window, "Contacts", "Online books");
+        }
+        let u = ui.clone();
+        b.connect_clicked(move |_| navigate(&u, "online"));
+        ui.nav.append(&b);
+    } else {
+        for book in &books {
+            let id = format!("eds:{}", book.uid);
+            let (b, _) = nav_button("network-workgroup-symbolic", book.label(), book.label());
+            if id == *ui.section.borrow() {
+                b.add_css_class("active");
+                chrome::set_title(&ui.window, "Contacts", book.label());
+                let count = w::label(&ui.eds_contacts.borrow().len().to_string(), "nav-readout");
+                count.add_css_class("compact-hide");
+                if let Some(line) = b.child().and_downcast::<gtk::Box>() {
+                    line.append(&count);
+                }
+            }
+            let u = ui.clone();
+            b.connect_clicked(move |_| navigate(&u, &id));
+            ui.nav.append(&b);
+        }
     }
     let (add, _) = nav_button("list-add-symbolic", "New list", "Create a contact list");
     add.add_css_class("nav-add");
@@ -736,7 +894,7 @@ fn details(ui: &Ui) {
         ui.details.append(&empty);
         return;
     }
-    let Some(c) = ui.book.borrow().contacts.iter().find(|c| c.id == ids[0]).cloned() else { return };
+    let Some(c) = lookup(ui, &ids[0]) else { return };
     let header = w::hbox(14);
     header.append(&avatar(&c, 48));
     let identity = w::vbox(4);
@@ -751,6 +909,9 @@ fn details(ui: &Ui) {
         ));
     }
     let bar = w::hbox(6);
+    if is_remote(ui) {
+        identity.append(&label("On this account · stays on the provider", "dim"));
+    }
     let favorite = w::icon_button(
         if c.favorite { "starred-symbolic" } else { "non-starred-symbolic" },
         if c.favorite { "Remove from favorites" } else { "Add to favorites" },
@@ -767,11 +928,13 @@ fn details(ui: &Ui) {
         }
         commit(&u, book);
     });
-    bar.append(&favorite);
-    let edit = w::icon_button("document-edit-symbolic", "Edit contact (Enter)");
-    let u = ui.clone();
-    edit.connect_clicked(move |_| edit_selected(&u));
-    bar.append(&edit);
+    if !is_remote(ui) {
+        bar.append(&favorite);
+        let edit = w::icon_button("document-edit-symbolic", "Edit contact (Enter)");
+        let u = ui.clone();
+        edit.connect_clicked(move |_| edit_selected(&u));
+        bar.append(&edit);
+    }
     ui.details.append(&bar);
     for (title, fields, scheme) in [
         ("EMAIL", &c.emails, "mailto:"),
@@ -905,9 +1068,13 @@ fn find(ui: &Ui) {
     ui.search.grab_focus();
 }
 fn edit_selected(ui: &Ui) {
+    if is_remote(ui) {
+        toast(ui, "This book is on the account. Add or edit contacts in All contacts.");
+        return;
+    }
     let id = ui.selected.borrow().first().cloned();
     if let Some(id) = id {
-        let c = ui.book.borrow().contacts.iter().find(|c| c.id == id).cloned();
+        let c = lookup(ui, &id);
         editor::open(ui, c);
     }
 }
@@ -942,6 +1109,10 @@ pub fn toast_action(ui: &Ui, text: &str, action: ToastAction<'_>) {
     });
 }
 fn delete(ui: &Ui) {
+    if is_remote(ui) {
+        toast(ui, "This book is on the account. Disconnect it in Settings → Online Accounts.");
+        return;
+    }
     let ids = ui.selected.borrow().clone();
     if ids.is_empty() {
         toast(ui, "Select contacts to delete.");
