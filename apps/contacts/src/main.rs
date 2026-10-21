@@ -11,7 +11,7 @@ fn main() -> glib::ExitCode {
     nixe_core::app::init(nixe_core::app::App { slug: "nixe-contacts", name: "Contacts" });
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("Usage: nixe-contacts [--section all|favorites|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]");
+        println!("Usage: nixe-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]");
         return glib::ExitCode::SUCCESS;
     }
     if std::env::var_os("GSK_RENDERER").is_none() {

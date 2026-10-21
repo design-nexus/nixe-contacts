@@ -74,23 +74,30 @@ fn mapping(ui: &Ui, data: formats::CsvData) {
     });
     dialog.present();
 }
+/// The book contact an imported card is a newer copy of: same vCard UID, or a UID
+/// that is the contact's own id (a card exported from here).
+fn existing<'a>(book: &'a model::Book, c: &model::Contact) -> Option<&'a model::Contact> {
+    let uid = formats::uid(c)?;
+    book.contacts.iter().find(|o| o.id == uid || formats::uid(o).as_deref() == Some(uid.as_str()))
+}
+
 fn preview(ui: &Ui, import: Import) {
     let (dialog, card) = w::dialog("Import preview", 580);
     dialog.set_default_height(600);
     let book = ui.book.borrow();
-    let duplicates = import
-        .contacts
-        .iter()
-        .enumerate()
-        .filter(|(i, c)| {
-            book.contacts.iter().any(|o| model::duplicates(c, o)) || import.contacts[..*i].iter().any(|o| model::duplicates(c, o))
-        })
-        .count();
+    let updates = import.contacts.iter().filter(|c| existing(&book, c).is_some()).count();
+    // Duplicates among the new cards, and against the book, through one index.
+    let mut all = book.contacts.clone();
+    all.extend(import.contacts.iter().filter(|c| existing(&book, c).is_none()).cloned());
+    let index = model::DupIndex::new(&all);
+    let flagged = index.flagged();
+    let duplicates = all[book.contacts.len()..].iter().filter(|c| flagged.contains(c.id.as_str())).count();
     drop(book);
     card.append(&ui::label(
         &format!(
-            "{} valid contacts · {} warnings · {} possible duplicates",
+            "{} contacts · {} update existing ones · {} warnings · {} possible duplicates",
             import.contacts.len(),
+            updates,
             import.warnings.len(),
             duplicates
         ),
@@ -128,6 +135,15 @@ fn preview(ui: &Ui, import: Import) {
         let section = u.section.borrow().clone();
         for c in &import.contacts {
             let mut c = c.clone();
+            // A newer copy of a card already here replaces it, keeping its id and lists.
+            if let Some(id) = existing(&book, &c).map(|o| o.id.clone()) {
+                c.id = id.clone();
+                if let Some(old) = book.contacts.iter_mut().find(|o| o.id == id) {
+                    c.favorite |= old.favorite;
+                    *old = c;
+                }
+                continue;
+            }
             c.id = model::id();
             if let Some(l) = book.lists.iter_mut().find(|l| l.id == section) {
                 l.members.insert(c.id.clone());

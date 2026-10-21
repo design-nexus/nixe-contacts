@@ -13,20 +13,38 @@ use std::{
 struct Fields {
     rows: FieldRows,
 }
+/// The labels offered for each kind of value; any other can be typed.
+fn labels_for(title: &str) -> &'static [&'static str] {
+    match title {
+        "PHONE" => &["cell", "home", "work", "main", "fax", "pager", "other"],
+        "WEBSITE" => &["home", "work", "blog", "profile", "other"],
+        _ => &["home", "work", "school", "other"],
+    }
+}
+/// A heading with an add button at its end.
+fn heading(body: &gtk::Box, title: &str, tip: &str) -> gtk::Button {
+    let head = w::hbox(6);
+    let l = ui::label(title, "contact-heading");
+    l.set_hexpand(true);
+    head.append(&l);
+    let add = w::icon_button("list-add-symbolic", tip);
+    head.append(&add);
+    body.append(&head);
+    add
+}
 impl Fields {
     fn new(title: &str, values: &[Field], body: &gtk::Box) -> Self {
-        body.append(&ui::label(title, "contact-heading"));
+        let add = heading(body, title, &format!("Add {}", title.to_lowercase()));
         let root = w::vbox(6);
         body.append(&root);
         let rows = Rc::new(RefCell::new(vec![]));
+        let labels = labels_for(title);
         for f in values {
-            add_field(&root, &rows, f);
+            add_field(&root, &rows, f, labels);
         }
-        let add = ui::button("+ Add", "Add another labeled value");
-        body.append(&add);
         let r = root.clone();
         let rs = rows.clone();
-        add.connect_clicked(move |_| add_field(&r, &rs, &Field { label: "other".into(), value: String::new() }));
+        add.connect_clicked(move |_| add_field(&r, &rs, &Field { label: labels[0].into(), value: String::new() }, labels));
         Self { rows }
     }
     fn values(&self) -> Vec<Field> {
@@ -48,15 +66,40 @@ impl Fields {
 type FieldRows = Rc<RefCell<Vec<(gtk::Box, gtk::Entry, gtk::TextView)>>>;
 /// The merge card's choices: which field, its picker, and the values offered.
 type Choices = Rc<RefCell<Vec<(usize, gtk::DropDown, Vec<String>)>>>;
-fn add_field(root: &gtk::Box, rows: &FieldRows, f: &Field) {
-    let row = w::hbox(6);
+/// A label entry with a menu of the usual labels beside it.
+fn label_picker(row: &gtk::Box, current: &str, labels: &[&'static str]) -> gtk::Entry {
     let name = gtk::Entry::new();
     name.set_width_chars(8);
     name.set_max_width_chars(9);
     name.set_placeholder_text(Some("Label"));
-    name.set_text(&f.label);
+    name.set_text(current);
     name.set_valign(gtk::Align::Start);
     row.append(&name);
+    let pick = gtk::MenuButton::new();
+    pick.set_icon_name("pan-down-symbolic");
+    pick.set_tooltip_text(Some("Choose a label"));
+    pick.add_css_class("flat");
+    pick.set_valign(gtk::Align::Start);
+    let list = w::vbox(0);
+    let pop = gtk::Popover::new();
+    for &l in labels {
+        let b = gtk::Button::with_label(l);
+        b.add_css_class("flat");
+        let (n, p) = (name.clone(), pop.clone());
+        b.connect_clicked(move |_| {
+            n.set_text(l);
+            p.popdown();
+        });
+        list.append(&b);
+    }
+    pop.set_child(Some(&list));
+    pick.set_popover(Some(&pop));
+    row.append(&pick);
+    name
+}
+fn add_field(root: &gtk::Box, rows: &FieldRows, f: &Field, labels: &[&'static str]) {
+    let row = w::hbox(6);
+    let name = label_picker(&row, &f.label, labels);
     let value = gtk::TextView::new();
     value.set_hexpand(true);
     value.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -75,6 +118,82 @@ fn add_field(root: &gtk::Box, rows: &FieldRows, f: &Field) {
     remove.connect_clicked(move |_| r.remove(&b));
     root.append(&row);
     rows.borrow_mut().push((row, name, value));
+}
+/// The address editor's rows: the row, its label, the five visible parts, and the two
+/// vCard parts (PO box, extended) that are kept as they were.
+type AddressRows = Rc<RefCell<Vec<(gtk::Box, gtk::Entry, [gtk::Entry; 5], (String, String))>>>;
+struct Addresses {
+    rows: AddressRows,
+}
+impl Addresses {
+    fn new(values: &[Field], body: &gtk::Box) -> Self {
+        let add = heading(body, "ADDRESS", "Add address");
+        let root = w::vbox(10);
+        body.append(&root);
+        let rows: AddressRows = Rc::new(RefCell::new(vec![]));
+        for f in values {
+            add_address(&root, &rows, f);
+        }
+        let (r, rs) = (root.clone(), rows.clone());
+        add.connect_clicked(move |_| add_address(&r, &rs, &Field { label: "home".into(), value: String::new() }));
+        Self { rows }
+    }
+    fn values(&self) -> Vec<Field> {
+        self.rows
+            .borrow()
+            .iter()
+            .filter(|(b, ..)| b.parent().is_some())
+            .map(|(_, label, parts, (po_box, extended))| {
+                let t = |i: usize| parts[i].text().trim().to_string();
+                let a = model::Address {
+                    po_box: po_box.clone(),
+                    extended: extended.clone(),
+                    street: t(0),
+                    city: t(1),
+                    region: t(2),
+                    postal: t(3),
+                    country: t(4),
+                };
+                (label.text().trim().to_string(), a)
+            })
+            .filter(|(_, a)| !a.is_empty())
+            .map(|(label, a)| Field { label, value: a.value() })
+            .collect()
+    }
+}
+fn add_address(root: &gtk::Box, rows: &AddressRows, f: &Field) {
+    let a = model::Address::parse(&f.value);
+    let row = w::hbox(6);
+    let label = label_picker(&row, &f.label, &["home", "work", "school", "other"]);
+    let grid = gtk::Grid::builder().row_spacing(4).column_spacing(4).hexpand(true).build();
+    let entry = |text: &str, hint: &str| {
+        let e = gtk::Entry::new();
+        e.set_text(text);
+        e.set_placeholder_text(Some(hint));
+        e.set_hexpand(true);
+        e
+    };
+    let parts = [
+        entry(&a.street, "Street"),
+        entry(&a.city, "City"),
+        entry(&a.region, "State or region"),
+        entry(&a.postal, "Postal code"),
+        entry(&a.country, "Country"),
+    ];
+    // Street across; city and region; postal code and country.
+    grid.attach(&parts[0], 0, 0, 2, 1);
+    grid.attach(&parts[1], 0, 1, 1, 1);
+    grid.attach(&parts[2], 1, 1, 1, 1);
+    grid.attach(&parts[3], 0, 2, 1, 1);
+    grid.attach(&parts[4], 1, 2, 1, 1);
+    row.append(&grid);
+    let remove = w::bar_button("list-remove-symbolic", "Remove address");
+    remove.set_valign(gtk::Align::Start);
+    row.append(&remove);
+    let (r, b) = (root.clone(), row.clone());
+    remove.connect_clicked(move |_| r.remove(&b));
+    root.append(&row);
+    rows.borrow_mut().push((row, label, parts, (a.po_box, a.extended)));
 }
 const NAMES: &[&str] =
     &["First name", "Last name", "Middle name", "Prefix", "Suffix", "Display name", "Company", "Job title", "Birthday"];
@@ -135,9 +254,9 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
     let preview = w::hbox(0);
     preview.append(&ui::avatar(&c, 72));
     body.append(&preview);
-    let photo_bar = w::hbox(8);
-    let choose = ui::button("Choose photo…", "Choose a PNG or JPEG photo");
-    let remove = ui::button("Remove photo", "Use initials instead of a photo");
+    let photo_bar = w::hbox(4);
+    let choose = w::icon_button("insert-image-symbolic", "Choose a photo (PNG or JPEG)");
+    let remove = w::icon_button("edit-clear-symbolic", "Remove the photo (initials are shown instead)");
     photo_bar.append(&choose);
     photo_bar.append(&remove);
     body.append(&photo_bar);
@@ -178,7 +297,7 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
                         if t.width() > 8192 || t.height() > 8192 {
                             anyhow::bail!("Photo dimensions must be at most 8192 × 8192.");
                         }
-                        Ok(bytes)
+                        Ok(model_photo(&bytes))
                     };
                     match load() {
                         Ok(bytes) => {
@@ -201,7 +320,7 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
             let entry = gtk::Entry::new();
             entry.set_text(&value);
             if *name == "Birthday" {
-                entry.set_placeholder_text(Some("YYYY-MM-DD or --MM-DD"));
+                entry.set_placeholder_text(Some("1985-04-12, or --04-12 without a year"));
             }
             body.append(&entry);
             entry
@@ -212,7 +331,7 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
     body.append(&favorite);
     let emails = Fields::new("EMAIL", &c.emails, &body);
     let phones = Fields::new("PHONE", &c.phones, &body);
-    let addresses = Fields::new("ADDRESS", &c.addresses, &body);
+    let addresses = Addresses::new(&c.addresses, &body);
     let websites = Fields::new("WEBSITE", &c.websites, &body);
     body.append(&ui::label("NOTES", "contact-heading"));
     let notes = gtk::TextView::new();
@@ -292,16 +411,26 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
             error.set_visible(true);
             return;
         }
-        if !valid_birthday(&c.birthday) {
-            error.set_text("Use a valid birthday: YYYY-MM-DD or --MM-DD.");
-            error.set_visible(true);
-            return;
+        let mut c = c;
+        // A birthday imported in a form Contacts doesn't read is kept until it's edited.
+        if c.birthday != original.birthday || model::normalize_birthday(&c.birthday).is_some() {
+            match model::normalize_birthday(&c.birthday) {
+                Some(b) => c.birthday = b,
+                None => {
+                    error.set_text("Use a birthday like 1985-04-12, or --04-12 without a year.");
+                    error.set_visible(true);
+                    return;
+                }
+            }
         }
         let mut book = u.book.borrow().clone();
         if let Some(other) = &merge_other {
             model::merge(&mut book, c.clone(), other);
         } else {
             if let Some(old) = book.contacts.iter_mut().find(|old| old.id == c.id) {
+                // Only what was changed here: anything changed elsewhere while the editor
+                // was open (by Nixe Assistant, or a list) stays.
+                c = changes_onto(&original, &c, old);
                 *old = c.clone();
             } else {
                 book.contacts.push(c.clone());
@@ -338,32 +467,45 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
     dialog.add_controller(keys);
     dialog.present();
 }
-fn valid_birthday(s: &str) -> bool {
-    if s.is_empty() {
-        return true;
-    }
-    let s = if let Some(rest) = s.strip_prefix("--") { format!("2000-{rest}") } else { s.into() };
-    let parts: Vec<_> = s.split('-').collect();
-    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
-        return false;
-    }
-    let (Ok(y), Ok(m), Ok(d)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>()) else { return false };
-    if y == 0 || m == 0 || m > 12 {
-        return false;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let max = match m {
-        2 => {
-            if leap {
-                29
-            } else {
-                28
-            }
+/// The edits made from `before` to `after`, applied to `now` (the contact as it is now):
+/// each field the editor changed takes the new value, the rest keep `now`'s.
+fn changes_onto(before: &Contact, after: &Contact, now: &Contact) -> Contact {
+    let mut out = now.clone();
+    let mut single = singles(now);
+    for ((slot, b), a) in single.iter_mut().zip(singles(before)).zip(singles(after)) {
+        if a != b {
+            *slot = a;
         }
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
+    }
+    set_singles(&mut out, &single);
+    macro_rules! take {
+        ($($f:ident),*) => {$(
+            if after.$f != before.$f {
+                out.$f = after.$f.clone();
+            }
+        )*};
+    }
+    take!(emails, phones, addresses, websites, notes, favorite, photo);
+    out
+}
+
+/// A chosen photo, at most 512 px on its longer side (as JPEG, or PNG when it has
+/// transparency), so it doesn't weigh down every save. The original if it can't be read.
+fn model_photo(bytes: &[u8]) -> Vec<u8> {
+    use gtk::gdk_pixbuf::{InterpType, Pixbuf};
+    let Ok(pb) = Pixbuf::from_stream(&gtk::gio::MemoryInputStream::from_bytes(&glib::Bytes::from(bytes)), None::<&gtk::gio::Cancellable>) else {
+        return bytes.to_vec();
     };
-    d > 0 && d <= max
+    let (w, h) = (pb.width(), pb.height());
+    let scale = 512.0 / w.max(h) as f64;
+    if scale >= 1.0 {
+        return bytes.to_vec();
+    }
+    let Some(small) = pb.scale_simple(((w as f64 * scale) as i32).max(1), ((h as f64 * scale) as i32).max(1), InterpType::Bilinear) else {
+        return bytes.to_vec();
+    };
+    let encoded = if small.has_alpha() { small.save_to_bufferv("png", &[]) } else { small.save_to_bufferv("jpeg", &[("quality", "90")]) };
+    encoded.unwrap_or_else(|_| bytes.to_vec())
 }
 
 pub fn review_merge(ui: &Ui, a: &Contact, b: &Contact) {

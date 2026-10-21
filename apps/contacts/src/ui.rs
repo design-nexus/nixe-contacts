@@ -32,6 +32,9 @@ pub struct State {
     pub showing_detail: Cell<bool>,
     pub rebuilding: Cell<bool>,
     pub editor: RefCell<Option<gtk::Window>>,
+    /// Ids of contacts sharing an email or phone with another, worked out once per change
+    /// to the book.
+    dup_ids: RefCell<Option<std::collections::HashSet<String>>>,
 }
 thread_local! {static UI:RefCell<Option<Ui>>=const{RefCell::new(None)};}
 /// The open window's state, once `present` has run (the control interface uses it).
@@ -46,7 +49,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         ui.window.present();
         return Ok(ui);
     }
-    let store = Store::open(&nixe_core::paths::data_dir().join("contacts.db"))?;
+    let mut store = Store::open(&nixe_core::paths::data_dir().join("contacts.db"))?;
     let book = store.load()?;
     theme::install();
     install_icons();
@@ -89,9 +92,8 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     let toolbar = w::hbox(6);
     toolbar.add_css_class("toolbar");
     page.append(&toolbar);
-    let new = button("New contact", "New contact (Ctrl+N)");
+    let new = w::bar_button("contact-new-symbolic", "New contact (Ctrl+N)");
     new.add_css_class("suggested-action");
-    new.set_child(Some(&action_content("contact-new-symbolic", "New contact")));
     toolbar.append(&new);
     let edit = w::bar_button("document-edit-symbolic", "Edit selected contact");
     toolbar.append(&edit);
@@ -177,6 +179,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         showing_detail: Cell::new(false),
         rebuilding: Cell::new(false),
         editor: RefCell::new(None),
+        dup_ids: RefCell::new(None),
     });
     UI.with(|u| *u.borrow_mut() = Some(ui.clone()));
     let u = ui.clone();
@@ -206,15 +209,27 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     });
     let u = ui.clone();
     ui.list.connect_row_activated(move |_, _| edit_selected(&u));
+    // Lay out again when the window's size changes: a probe over the whole window that
+    // reports its own resizes (as Music does), not a per-frame tick.
+    let probe = gtk::DrawingArea::new();
+    probe.set_can_target(false);
+    probe.set_can_focus(false);
+    ui.overlay.add_overlay(&probe);
+    ui.overlay.set_measure_overlay(&probe, false);
     let u = ui.clone();
-    let last_width = Cell::new(0);
-    ui.window.add_tick_callback(move |win, _| {
-        if last_width.replace(win.width()) != win.width() {
-            layout(&u);
-        }
-        glib::ControlFlow::Continue
+    probe.connect_resize(move |_, _, _| {
+        let u = u.clone();
+        glib::idle_add_local_once(move || layout(&u));
+    });
+    let u = ui.clone();
+    ui.search.connect_stop_search(move |s| {
+        // Esc while typing in the search: clear it and put it away.
+        s.set_text("");
+        s.set_visible(false);
+        layout(&u);
     });
     for (label, run) in [
+        ("Merge exact duplicates", 9),
         ("Import contacts…", 0),
         ("Export selected / view as vCard…", 1),
         ("Export selected / view as CSV…", 2),
@@ -242,6 +257,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
                 5 => delete(&u),
                 6 => rename_list(&u),
                 7 => delete_list(&u),
+                9 => merge_all(&u),
                 _ => email_list(&u),
             }
         });
@@ -337,12 +353,6 @@ fn install_icons() {
         gtk::IconTheme::for_display(&display).add_search_path(&dir);
     }
 }
-fn action_content(icon: &str, title: &str) -> gtk::Box {
-    let row = w::hbox(8);
-    row.append(&gtk::Image::from_icon_name(icon));
-    row.append(&gtk::Label::new(Some(title)));
-    row
-}
 pub fn button(label: &str, tip: &str) -> gtk::Button {
     let b = gtk::Button::with_label(label);
     b.set_tooltip_text(Some(tip));
@@ -372,6 +382,7 @@ pub fn commit(ui: &Ui, book: Book) -> bool {
     match ui.store.borrow_mut().save(&book) {
         Ok(()) => {
             *ui.book.borrow_mut() = book;
+            ui.dup_ids.borrow_mut().take();
             refresh(ui);
             true
         }
@@ -381,12 +392,57 @@ pub fn commit(ui: &Ui, book: Book) -> bool {
         }
     }
 }
+/// Ids of local contacts that share an email or phone with another.
+fn dup_ids(ui: &Ui) -> std::collections::HashSet<String> {
+    let mut cached = ui.dup_ids.borrow_mut();
+    cached
+        .get_or_insert_with(|| model::DupIndex::new(&ui.book.borrow().contacts).flagged().into_iter().map(str::to_string).collect())
+        .clone()
+}
+
+/// Fold every group of contacts that share an exact email or phone into one card (the
+/// one with the most details first), with Undo.
+fn merge_all(ui: &Ui) {
+    let before = ui.book.borrow().clone();
+    let mut book = before.clone();
+    let index = model::DupIndex::new(&before.contacts);
+    let groups = index.groups();
+    if groups.is_empty() {
+        toast(ui, "No contacts share an email or phone.");
+        return;
+    }
+    let weight = |c: &Contact| c.emails.len() + c.phones.len() + c.addresses.len() + c.websites.len() + usize::from(!c.notes.is_empty());
+    let mut merged = 0;
+    for group in &groups {
+        let mut cards: Vec<Contact> = group.iter().filter_map(|id| before.contacts.iter().find(|c| c.id == *id).cloned()).collect();
+        cards.sort_by_key(|c| std::cmp::Reverse(weight(c)));
+        let mut primary = cards.remove(0);
+        for other in &cards {
+            primary = model::combine(primary, other);
+        }
+        for other in &cards {
+            model::merge(&mut book, primary.clone(), &other.id);
+            merged += 1;
+        }
+    }
+    if commit(ui, book) {
+        let u = ui.clone();
+        toast_action(
+            ui,
+            &format!("Merged {merged} duplicate cards into {}.", groups.len()),
+            Some(("Undo", Box::new(move || {
+                commit(&u, before.clone());
+            }))),
+        );
+    }
+}
+
 pub fn navigate(ui: &Ui, section: &str) {
     if section == "settings" {
         settings();
         return;
     }
-    let valid = matches!(section, "all" | "favorites" | "duplicates") || ui.book.borrow().lists.iter().any(|l| l.id == section);
+    let valid = matches!(section, "all" | "favorites" | "birthdays" | "duplicates") || ui.book.borrow().lists.iter().any(|l| l.id == section);
     *ui.section.borrow_mut() = if valid { section.into() } else { "all".into() };
     ui.selected.borrow_mut().clear();
     ui.showing_detail.set(false);
@@ -397,6 +453,11 @@ pub fn visible(ui: &Ui) -> Vec<Contact> {
     let book = ui.book.borrow();
     let section = ui.section.borrow();
     let query = ui.search.text();
+    if section.as_str() == "birthdays" {
+        // Soonest first, through the coming year.
+        return crate::control::upcoming(&book, 366).into_iter().map(|(_, c)| c).filter(|c| c.matches(&query)).collect();
+    }
+    let dups = if section.as_str() == "duplicates" { dup_ids(ui) } else { Default::default() };
     let mut result: Vec<_> = book
         .contacts
         .iter()
@@ -404,7 +465,7 @@ pub fn visible(ui: &Ui) -> Vec<Contact> {
             (match section.as_str() {
                 "all" => true,
                 "favorites" => c.favorite,
-                "duplicates" => book.contacts.iter().any(|o| o.id != c.id && model::duplicates(c, o)),
+                "duplicates" => dups.contains(&c.id),
                 id => book.lists.iter().find(|l| l.id == id).is_some_and(|l| l.members.contains(&c.id)),
             }) && c.matches(&query)
         })
@@ -432,7 +493,14 @@ pub fn refresh(ui: &Ui) {
     }
     let contacts = visible(ui);
     let p = prefs::get();
+    let birthdays = ui.section.borrow().as_str() == "birthdays";
+    let soon: std::collections::HashMap<String, i64> = if birthdays {
+        crate::control::upcoming(&ui.book.borrow(), 366).into_iter().map(|(n, c)| (c.id, n)).collect()
+    } else {
+        Default::default()
+    };
     let selected = ui.selected.borrow().clone();
+
     let alive: Vec<_> = selected.into_iter().filter(|id| contacts.iter().any(|c| c.id == *id)).collect();
     *ui.selected.borrow_mut() = alive.clone();
     for c in &contacts {
@@ -456,11 +524,20 @@ pub fn refresh(ui: &Ui) {
             heading.append(&star);
         }
         b.append(&heading);
-        let sub = gtk::Label::new(Some(if c.company.is_empty() {
+        let when = soon.get(&c.id).map(|&n| {
+            let day = birthday_text(&c.birthday);
+            match n {
+                0 => format!("Today · {day}"),
+                1 => format!("Tomorrow · {day}"),
+                n => format!("In {n} days · {day}"),
+            }
+        });
+        let sub = gtk::Label::new(Some(when.as_deref().unwrap_or(if c.company.is_empty() {
             c.emails.first().map(|f| f.value.as_str()).unwrap_or("")
         } else {
             &c.company
-        }));
+        })));
+
         sub.add_css_class("dim");
         sub.add_css_class("contact-row-description");
         sub.set_xalign(0.0);
@@ -536,18 +613,19 @@ fn nav(ui: &Ui) {
         ("all".into(), "All contacts".into(), "contact-book-symbolic", book.contacts.len()),
         ("favorites".into(), "Favorites".into(), "starred-symbolic", book.contacts.iter().filter(|c| c.favorite).count()),
         (
-            "duplicates".into(),
-            "Duplicates".into(),
-            "edit-copy-symbolic",
-            book.contacts.iter().filter(|c| book.contacts.iter().any(|o| o.id != c.id && model::duplicates(c, o))).count(),
+            "birthdays".into(),
+            "Birthdays".into(),
+            "x-office-calendar-symbolic",
+            crate::control::upcoming(&book, 30).len(),
         ),
+        ("duplicates".into(), "Duplicates".into(), "edit-copy-symbolic", dup_ids(ui).len()),
     ];
     for l in &book.lists {
         items.push((l.id.clone(), l.name.clone(), "view-list-symbolic", l.members.len()));
     }
     nav_group(ui, "CONTACTS", true);
     for (i, (id, name, icon, count)) in items.into_iter().enumerate() {
-        if i == 3 {
+        if i == 4 {
             nav_group(ui, "LISTS", false);
         }
         let (b, _) = nav_button(icon, &name, &name);
@@ -673,8 +751,10 @@ fn details(ui: &Ui) {
         ));
     }
     let bar = w::hbox(6);
-    let favorite = w::labeled_button(if c.favorite { "starred-symbolic" } else { "non-starred-symbolic" }, "Favorite");
-    favorite.set_tooltip_text(Some("Toggle favorite"));
+    let favorite = w::icon_button(
+        if c.favorite { "starred-symbolic" } else { "non-starred-symbolic" },
+        if c.favorite { "Remove from favorites" } else { "Add to favorites" },
+    );
     if c.favorite {
         favorite.add_css_class("suggested-action");
     }
@@ -688,7 +768,7 @@ fn details(ui: &Ui) {
         commit(&u, book);
     });
     bar.append(&favorite);
-    let edit = button("Edit", "Edit selected contact");
+    let edit = w::icon_button("document-edit-symbolic", "Edit contact (Enter)");
     let u = ui.clone();
     edit.connect_clicked(move |_| edit_selected(&u));
     bar.append(&edit);
@@ -708,11 +788,23 @@ fn details(ui: &Ui) {
         ui.details.append(&rows);
         for f in fields {
             let actions = w::hbox(4);
+            // Addresses show (and copy) as lines, not their stored parts.
+            let shown = if title == "ADDRESS" { model::Address::parse(&f.value).display() } else { f.value.clone() };
             let copy = w::bar_button("edit-copy-symbolic", "Copy value");
-            let value = f.value.clone();
+            let value = shown.clone();
             let win = ui.window.clone();
             copy.connect_clicked(move |_| win.clipboard().set_text(&value));
             actions.append(&copy);
+            if title == "ADDRESS" {
+                let map = w::bar_button("mark-location-symbolic", "Show on a map");
+                let query = shown.replace('\n', ", ");
+                let u = ui.clone();
+                map.connect_clicked(move |_| {
+                    let q = glib::uri_escape_string(&query, None::<&str>, false);
+                    launch(&u, &format!("https://www.openstreetmap.org/search?query={q}"));
+                });
+                actions.append(&map);
+            }
             if title != "ADDRESS" {
                 let open = w::bar_button("external-link-symbolic", "Open using the default app");
                 let value = f.value.clone();
@@ -738,10 +830,11 @@ fn details(ui: &Ui) {
                 });
                 actions.append(&open);
             }
-            rows.append(&w::row(&f.value, &f.label, Some(actions.upcast_ref())));
+            rows.append(&w::row(&glib::markup_escape_text(&shown), &glib::markup_escape_text(&f.label), Some(actions.upcast_ref())));
         }
     }
-    for (title, text) in [("BIRTHDAY", &c.birthday), ("NOTES", &c.notes)] {
+    let birthday = birthday_text(&c.birthday);
+    for (title, text) in [("BIRTHDAY", &birthday), ("NOTES", &c.notes)] {
         if !text.is_empty() {
             ui.details.append(&label(title, "contact-heading"));
             ui.details.append(&label(text, ""));
@@ -764,13 +857,31 @@ fn details(ui: &Ui) {
         let others: Vec<_> =
             ui.book.borrow().contacts.iter().filter(|o| o.id != c.id && model::duplicates(&c, o)).cloned().collect();
         ui.details.append(&label("POSSIBLE DUPLICATES", "contact-heading"));
+        let rows = w::vbox(0);
+        rows.add_css_class("group-list");
         for other in others {
-            let b = button(&format!("Review merge with {}", other.name(false)), "Review fields before merging");
+            let b = w::icon_button("view-dual-symbolic", &format!("Review a merge with {}", other.name(false)));
             let u = ui.clone();
             let a = c.clone();
-            b.connect_clicked(move |_| editor::review_merge(&u, &a, &other));
-            ui.details.append(&b);
+            let o = other.clone();
+            b.connect_clicked(move |_| editor::review_merge(&u, &a, &o));
+            let what = other.emails.first().or(other.phones.first()).map(|f| f.value.clone()).unwrap_or_default();
+            rows.append(&w::row(&glib::markup_escape_text(&other.name(false)), &glib::markup_escape_text(&what), Some(b.upcast_ref())));
         }
+        ui.details.append(&rows);
+    }
+}
+
+/// A birthday for reading: "12 April 1985", or "12 April" without a year. Anything
+/// Contacts doesn't read is shown as it is.
+fn birthday_text(b: &str) -> String {
+    const MONTHS: [&str; 12] =
+        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    let Some((m, d)) = model::birthday_md(b).filter(|(m, _)| (1..=12).contains(m)) else { return b.to_string() };
+    let month = MONTHS[m as usize - 1];
+    match b.get(..4).filter(|_| !b.starts_with("--")) {
+        Some(y) => format!("{d} {month} {y}"),
+        None => format!("{d} {month}"),
     }
 }
 pub fn avatar(c: &Contact, size: i32) -> gtk::Widget {
