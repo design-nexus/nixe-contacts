@@ -1,0 +1,10 @@
+{
+  "application": "contacts",
+  "directory": "contacts",
+  "packages": [
+    "nixe-contacts"
+  ],
+  "manifest": "Cargo.toml",
+  "prepare": [],
+  "binaries": []
+}
