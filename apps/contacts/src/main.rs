@@ -11,8 +11,21 @@ fn main() -> glib::ExitCode {
     nixe_core::app::init(nixe_core::app::App { slug: "nixe-contacts", name: "Contacts" });
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("Usage: nixe-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]");
+        println!("Usage: nixe-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]\n       nixe-contacts --find QUERY   (matching contacts as JSON, no window)");
         return glib::ExitCode::SUCCESS;
+    }
+    if let Some(i) = args.iter().position(|s| s == "--find") {
+        let query = args.get(i + 1).map(String::as_str).unwrap_or("");
+        return match control::find_headless(query) {
+            Ok(found) => {
+                println!("{found}");
+                glib::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("Contacts: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
     }
     if std::env::var_os("GSK_RENDERER").is_none() {
         unsafe {

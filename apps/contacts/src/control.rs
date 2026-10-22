@@ -11,6 +11,14 @@ use serde_json::{json, Value};
 /// Most emails or phones one call may add.
 const MAX_VALUES: usize = 20;
 
+/// `nixe-contacts --find QUERY`: the same answer as `contacts.find`, printed
+/// as JSON without opening a window (Mail's recipient suggestions, Assistant).
+pub fn find_headless(query: &str) -> anyhow::Result<Value> {
+    let book = model::Store::read(&nixe_core::paths::data_dir().join("contacts.db"))?.unwrap_or_default();
+    let found: Vec<Value> = book.contacts.iter().filter(|c| c.matches(query)).take(10).map(card).collect();
+    Ok(json!({"contacts": found, "untrusted_content": true}))
+}
+
 pub fn tools() -> Value {
     let list = json!({"type": "array", "items": {"type": "string"}, "maxItems": MAX_VALUES});
     json!([
@@ -23,7 +31,7 @@ pub fn tools() -> Value {
     ])
 }
 
-fn card(c: &Contact) -> Value {
+pub fn card(c: &Contact) -> Value {
     let values = |f: &[Field]| f.iter().map(|x| json!({"label": x.label, "value": x.value})).collect::<Vec<_>>();
     let addresses: Vec<Value> = c
         .addresses

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -262,6 +262,16 @@ impl Store {
         db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS contacts(id TEXT PRIMARY KEY, data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS lists(id TEXT PRIMARY KEY, name TEXT NOT NULL); CREATE TABLE IF NOT EXISTS members(list_id TEXT REFERENCES lists(id) ON DELETE CASCADE, contact_id TEXT REFERENCES contacts(id) ON DELETE CASCADE, PRIMARY KEY(list_id,contact_id)); PRAGMA user_version=1;")?;
         Ok(Self { db, saved: HashMap::new() })
     }
+    /// Reads the book without changing anything (`--find`, with no window).
+    /// `None` when there's no address book yet.
+    pub fn read(path: &Path) -> Result<Option<Book>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        db.busy_timeout(std::time::Duration::from_secs(5))?;
+        Self { db, saved: HashMap::new() }.load().map(Some)
+    }
     pub fn load(&mut self) -> Result<Book> {
         let mut book = Book::default();
         let mut saved = HashMap::new();
@@ -456,6 +466,27 @@ pub fn merge(book: &mut Book, primary: Contact, other: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_load_changes_nothing() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("nixe-contacts-read-{}", std::process::id()));
+        let path = dir.join("contacts.db");
+        assert!(Store::read(&path)?.is_none(), "no book yet: nothing created");
+        assert!(!path.exists());
+        let mut store = Store::open(&path)?;
+        let sam = Contact {
+            first: "Sam".into(),
+            emails: vec![Field { label: "home".into(), value: "sam@example.org".into() }],
+            ..Default::default()
+        };
+        store.save(&Book { contacts: vec![sam], lists: Vec::new() })?;
+        drop(store);
+        let before = std::fs::read(&path)?;
+        let book = Store::read(&path)?.unwrap();
+        assert!(book.contacts[0].matches("sam@exa"));
+        assert_eq!(std::fs::read(&path)?, before);
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
+    }
     #[test]
     fn persistence_membership_and_merge() -> Result<()> {
         let mut store = Store::open(Path::new(":memory:"))?;
