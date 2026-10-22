@@ -7,7 +7,7 @@ Accounts can be read alongside it.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe/main/install.sh | bash -s -- contacts
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-contacts/main/install.sh | bash -s -- contacts
 ```
 
 This builds with Cargo and installs `nixe-contacts` to `~/.local/bin` with a launcher
