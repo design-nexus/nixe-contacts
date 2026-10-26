@@ -454,7 +454,48 @@ fn eds_uid(section: &str) -> Option<&str> {
     section.strip_prefix("eds:")
 }
 
+/// Microsoft accounts (GOA `ms_graph`, `exchange`) whose address books need
+/// evolution-ews's EDS backends, which plain evolution-data-server doesn't have.
+fn unsupported_accounts() -> Vec<String> {
+    let installed = |name: &str| {
+        ["/usr/lib", "/usr/lib64", "/usr/local/lib"]
+            .iter()
+            .any(|dir| std::path::Path::new(&format!("{dir}/evolution-data-server/addressbook-backends/{name}")).exists())
+    };
+    let Ok(client) = nixe_accounts::Client::connect() else { return Vec::new() };
+    client
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| match a.provider_type.as_str() {
+            "ms_graph" => !installed("libebookbackendmicrosoft365.so"),
+            "exchange" => !installed("libebookbackendews.so"),
+            _ => false,
+        })
+        .map(|a| a.label().to_string())
+        .collect()
+}
+
 fn load_eds(ui: &Ui) {
+    // Said once a session, when the address books first load.
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let u = ui.clone();
+        let handle = gtk::gio::spawn_blocking(unsupported_accounts);
+        glib::spawn_future_local(async move {
+            if let Ok(names) = handle.await
+                && !names.is_empty()
+            {
+                toast(
+                    &u,
+                    &format!(
+                        "{}: its contacts need the Microsoft 365 backends for Evolution Data Server (evolution-ews-backends or evolution-ews).",
+                        names.join(", ")
+                    ),
+                );
+            }
+        });
+    }
     let u = ui.clone();
     let handle = gtk::gio::spawn_blocking(nixe_accounts::eds::list_address_books);
     glib::spawn_future_local(async move {
