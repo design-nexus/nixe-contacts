@@ -1,20 +1,20 @@
-//! Contacts' tools on the control interface (`nixe_core::control`), for Nixe Assistant:
+//! Contacts' tools on the control interface (`nyx_core::control`), for Nyx Assistant:
 //! look people up, list upcoming birthdays and lists, add someone, change or add details,
 //! and put someone on a list. Nothing is removed: no delete, no merge, no clearing a
 //! field; notes are added to, never replaced.
 
 use crate::model::{self, Address, Contact, Field};
 use crate::ui;
-use nixe_core::control::text;
+use nyx_core::control::text;
 use serde_json::{json, Value};
 
 /// Most emails or phones one call may add.
 const MAX_VALUES: usize = 20;
 
-/// `nixe-contacts --find QUERY`: the same answer as `contacts.find`, printed
+/// `nyx-contacts --find QUERY`: the same answer as `contacts.find`, printed
 /// as JSON without opening a window (Mail's recipient suggestions, Assistant).
 pub fn find_headless(query: &str) -> anyhow::Result<Value> {
-    let book = model::Store::read(&nixe_core::paths::data_dir().join("contacts.db"))?.unwrap_or_default();
+    let book = model::Store::read(&nyx_core::paths::data_dir().join("contacts.db"))?.unwrap_or_default();
     let found: Vec<Value> = book.contacts.iter().filter(|c| c.matches(query)).take(10).map(card).collect();
     Ok(json!({"contacts": found, "untrusted_content": true}))
 }

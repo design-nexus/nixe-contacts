@@ -212,7 +212,8 @@ pub fn vcard_read(text: &str) -> Import {
                     c.extra.push(line.clone());
                 }
             }
-            "X-NIXE-FAVORITE" => c.favorite = value == "1",
+            // Cards exported before the suite was called Nyx say X-NIXE-FAVORITE.
+            "X-NYX-FAVORITE" | "X-NIXE-FAVORITE" => c.favorite = value == "1",
             _ => c.extra.push(line.clone()),
         }
         if property == "UID" {
@@ -279,7 +280,7 @@ pub fn vcard_write(contacts: &[Contact]) -> String {
             lines.push(format!("PHOTO;ENCODING=b;TYPE={mime}:{}", STANDARD.encode(&c.photo)));
         }
         if c.favorite {
-            lines.push("X-NIXE-FAVORITE:1".into());
+            lines.push("X-NYX-FAVORITE:1".into());
         }
         // ORG may carry departments; retain it only when it still agrees with the edited company.
         for extra in &c.extra {

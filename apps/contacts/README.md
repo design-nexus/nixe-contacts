@@ -7,10 +7,10 @@ Accounts can be read alongside it.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-contacts/main/install.sh | bash -s -- contacts
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-contacts/main/install.sh | bash -s -- contacts
 ```
 
-This builds with Cargo and installs `nixe-contacts` to `~/.local/bin` with a launcher
+This builds with Cargo and installs `nyx-contacts` to `~/.local/bin` with a launcher
 entry. To remove it, run the same line with `uninstall.sh` in place of `install.sh`.
 
 ## Features
@@ -36,7 +36,7 @@ entry. To remove it, run the same line with `uninstall.sh` in place of `install.
   would run as spreadsheet formulas are quoted). CSV leaves out photos, lists, favorites
   and custom properties. Export uses the selection, or the whole current view when
   nothing is selected.
-- **Nixe Assistant** works Contacts over the session bus: `contacts.find`,
+- **Nyx Assistant** works Contacts over the session bus: `contacts.find`,
   `contacts.birthdays`, `contacts.lists`, `contacts.add` (refused for an email or phone
   someone already has), `contacts.update` (changes or adds; notes are added to, never
   replaced) and `contacts.add_to_list`.
@@ -44,7 +44,7 @@ entry. To remove it, run the same line with `uninstall.sh` in place of `install.
 ## Usage
 
 ```
-nixe-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]
+nyx-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]
 ```
 
 A file argument opens its import preview.
@@ -63,6 +63,6 @@ A file argument opens its import preview.
 
 ## Files
 
-- Address book: `~/.local/share/nixe-contacts/contacts.db`. Photos are stored in it; back
+- Address book: `~/.local/share/nyx-contacts/contacts.db`. Photos are stored in it; back
   it up while Contacts is closed.
-- Settings: `~/.config/nixe-contacts/settings.toml`
+- Settings: `~/.config/nyx-contacts/settings.toml`

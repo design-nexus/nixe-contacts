@@ -4,7 +4,7 @@ use crate::{
     prefs, theme, transfer,
 };
 use gtk::{gdk, glib, prelude::*};
-use nixe_ui::{chrome, widgets as w};
+use nyx_ui::{chrome, widgets as w};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -32,7 +32,7 @@ pub struct State {
     pub showing_detail: Cell<bool>,
     pub rebuilding: Cell<bool>,
     pub editor: RefCell<Option<gtk::Window>>,
-    eds_books: RefCell<Vec<nixe_accounts::eds::AddressBook>>,
+    eds_books: RefCell<Vec<nyx_accounts::eds::AddressBook>>,
     eds_contacts: RefCell<Vec<Contact>>,
     eds_ready: Cell<bool>,
     eds_loading: Cell<bool>,
@@ -53,13 +53,13 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         ui.window.present();
         return Ok(ui);
     }
-    let mut store = Store::open(&nixe_core::paths::data_dir().join("contacts.db"))?;
+    let mut store = Store::open(&nyx_core::paths::data_dir().join("contacts.db"))?;
     let book = store.load()?;
     theme::install();
     install_icons();
     let window = gtk::ApplicationWindow::builder().application(app).default_width(1120).default_height(800).build();
     window.add_css_class("contacts-window");
-    window.set_icon_name(Some("io.github.design_nexus.nixe.Contacts"));
+    window.set_icon_name(Some("io.github.design_nexus.nyx.Contacts"));
     window.set_titlebar(Some(&w::hbox(0)));
     let overlay = gtk::Overlay::new();
     let frame = w::vbox(0);
@@ -160,7 +160,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     toast_box.set_margin_bottom(48);
     toast_box.set_visible(false);
     overlay.add_overlay(&toast_box);
-    let start = section.map(str::to_string).unwrap_or_else(|| nixe_theme::start_page("all", &prefs::get().last_section));
+    let start = section.map(str::to_string).unwrap_or_else(|| nyx_theme::start_page("all", &prefs::get().last_section));
     let ui = Rc::new(State {
         window,
         overlay,
@@ -271,9 +271,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         });
     }
     shortcuts.connect_clicked(|_| show_shortcuts());
-    nixe_ui::keys::install(
+    nyx_ui::keys::install(
         &ui.window,
-        nixe_ui::keys::Common { settings: Some(settings), shortcuts: Some(show_shortcuts), close: true, ..Default::default() },
+        nyx_ui::keys::Common { settings: Some(settings), shortcuts: Some(show_shortcuts), close: true, ..Default::default() },
     );
     let keys = gtk::EventControllerKey::new();
     let u = ui.clone();
@@ -288,8 +288,8 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
             }
             gdk::Key::F1 => show_shortcuts(),
             gdk::Key::Escape => {
-                if nixe_ui::settings_card::is_open() {
-                    nixe_ui::settings_card::escape();
+                if nyx_ui::settings_card::is_open() {
+                    nyx_ui::settings_card::escape();
                 } else {
                     u.search.set_text("");
                     u.search.set_visible(false);
@@ -350,7 +350,7 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     Ok(ui)
 }
 fn install_icons() {
-    let dir = nixe_core::paths::cache_dir().join("icons");
+    let dir = nyx_core::paths::cache_dir().join("icons");
     let _ = std::fs::create_dir_all(&dir);
     for (name, svg) in [
         ("contact-new-symbolic.svg", include_str!("../data/icons/contact-new-symbolic.svg")),
@@ -462,7 +462,7 @@ fn unsupported_accounts() -> Vec<String> {
             .iter()
             .any(|dir| std::path::Path::new(&format!("{dir}/evolution-data-server/addressbook-backends/{name}")).exists())
     };
-    let Ok(client) = nixe_accounts::Client::connect() else { return Vec::new() };
+    let Ok(client) = nyx_accounts::Client::connect() else { return Vec::new() };
     client
         .list()
         .unwrap_or_default()
@@ -497,14 +497,14 @@ fn load_eds(ui: &Ui) {
         });
     }
     let u = ui.clone();
-    let handle = gtk::gio::spawn_blocking(nixe_accounts::eds::list_address_books);
+    let handle = gtk::gio::spawn_blocking(nyx_accounts::eds::list_address_books);
     glib::spawn_future_local(async move {
         match handle.await {
             Ok(Ok(books)) => {
                 u.eds_ready.set(true);
                 *u.eds_books.borrow_mut() = books;
             }
-            Ok(Err(nixe_accounts::Error::Unavailable)) => {
+            Ok(Err(nyx_accounts::Error::Unavailable)) => {
                 u.eds_ready.set(false);
                 u.eds_books.borrow_mut().clear();
             }
@@ -529,7 +529,7 @@ fn load_eds_contacts(ui: &Ui, uid: String) {
     ui.eds_loading.set(true);
     ui.eds_contacts.borrow_mut().clear();
     let u = ui.clone();
-    let handle = gtk::gio::spawn_blocking(move || nixe_accounts::eds::list_vcards(&uid));
+    let handle = gtk::gio::spawn_blocking(move || nyx_accounts::eds::list_vcards(&uid));
     glib::spawn_future_local(async move {
         let mut contacts = Vec::new();
         if let Ok(Ok(vcards)) = handle.await {
@@ -863,7 +863,7 @@ fn nav(ui: &Ui) {
 fn layout(ui: &Ui) {
     let width = if ui.window.width() > 0 { ui.window.width() } else { ui.window.default_width() };
     let narrow = width > 0 && width < 980;
-    nixe_ui::settings_card::fit(&ui.window);
+    nyx_ui::settings_card::fit(&ui.window);
     ui.narrow.set(narrow);
     let compact = narrow || prefs::get().sidebar_collapsed;
     if compact {

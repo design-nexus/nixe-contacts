@@ -4,7 +4,7 @@ use crate::{
     ui::{self, Ui},
 };
 use gtk::{gio, prelude::*};
-use nixe_ui::widgets as w;
+use nyx_ui::widgets as w;
 use std::{path::Path, rc::Rc};
 pub fn choose_import(ui: &Ui) {
     let picker = gtk::FileDialog::builder().title("Import contacts").modal(true).build();
@@ -198,7 +198,7 @@ fn save_export(ui: &Ui, contacts: Vec<model::Contact>, csv: bool) {
     picker.save(Some(&ui.window), None::<&gio::Cancellable>, move |result| {
         if let Ok(file) = result
             && let Some(path) = file.path() {
-                match nixe_core::cmd::atomic_write(&path, &*bytes) {
+                match nyx_core::cmd::atomic_write(&path, &*bytes) {
                     Ok(()) => ui::toast(&u, &format!("Exported {} contacts.", contacts.len())),
                     Err(e) => ui::toast(&u, &format!("Could not export: {e}")),
                 }

@@ -8,10 +8,10 @@ mod transfer;
 mod ui;
 use gtk::{gio, glib, prelude::*};
 fn main() -> glib::ExitCode {
-    nixe_core::app::init(nixe_core::app::App { slug: "nixe-contacts", name: "Contacts" });
+    nyx_core::app::init(nyx_core::app::App { slug: "nyx-contacts", name: "Contacts" });
     let args: Vec<_> = std::env::args().collect();
     if args.iter().any(|s| s == "--help" || s == "-h") {
-        println!("Usage: nixe-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]\n       nixe-contacts --find QUERY   (matching contacts as JSON, no window)");
+        println!("Usage: nyx-contacts [--section all|favorites|birthdays|duplicates|settings] [--toggle] [FILE.vcf|FILE.csv …]\n       nyx-contacts --find QUERY   (matching contacts as JSON, no window)");
         return glib::ExitCode::SUCCESS;
     }
     if let Some(i) = args.iter().position(|s| s == "--find") {
@@ -33,11 +33,11 @@ fn main() -> glib::ExitCode {
         }
     }
     let app = gtk::Application::builder()
-        .application_id("io.github.design_nexus.nixe.Contacts")
+        .application_id("io.github.design_nexus.nyx.Contacts")
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
-    // Nixe Assistant looks people up and adds them through this (primary instance only).
-    app.connect_startup(|app| nixe_core::control::serve(app, control::tools(), control::handle));
+    // Nyx Assistant looks people up and adds them through this (primary instance only).
+    app.connect_startup(|app| nyx_core::control::serve(app, control::tools(), control::handle));
     app.connect_command_line(|app, cl| {
         let argv: Vec<_> = cl.arguments().iter().map(|s| s.to_string_lossy().into_owned()).collect();
         if argv.iter().any(|s| s == "--toggle")
@@ -50,7 +50,7 @@ fn main() -> glib::ExitCode {
             Ok(ui) => ui,
             Err(e) => {
                 eprintln!("Contacts: {e:#}");
-                let (w, b) = nixe_ui::widgets::dialog("Contacts could not open", 480);
+                let (w, b) = nyx_ui::widgets::dialog("Contacts could not open", 480);
                 b.append(&gtk::Label::new(Some(&format!("{e:#}\nYour address book has been kept unchanged."))));
                 w.set_application(Some(app));
                 w.present();

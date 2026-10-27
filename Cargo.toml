@@ -6,7 +6,7 @@ members = ["apps/contacts"]
 edition = "2024"
 license = "MIT"
 authors = ["Ken Smith"]
-repository = "https://github.com/design-nexus/nixe-contacts"
+repository = "https://github.com/design-nexus/nyx-contacts"
 
 [profile.release]
 lto = "thin"

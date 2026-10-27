@@ -2,7 +2,7 @@
   "application": "contacts",
   "directory": "contacts",
   "packages": [
-    "nixe-contacts"
+    "nyx-contacts"
   ],
   "manifest": "Cargo.toml",
   "prepare": [],
@@ -13,9 +13,9 @@
       "test",
       "--locked",
       "-p",
-      "nixe-contacts",
+      "nyx-contacts",
       "--bin",
-      "nixe-contacts"
+      "nyx-contacts"
     ]
   ]
 }

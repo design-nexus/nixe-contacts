@@ -468,7 +468,7 @@ mod tests {
     use super::*;
     #[test]
     fn read_only_load_changes_nothing() -> Result<()> {
-        let dir = std::env::temp_dir().join(format!("nixe-contacts-read-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nyx-contacts-read-{}", std::process::id()));
         let path = dir.join("contacts.db");
         assert!(Store::read(&path)?.is_none(), "no book yet: nothing created");
         assert!(!path.exists());

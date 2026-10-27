@@ -4,7 +4,7 @@ use crate::{
     ui::{self, Ui},
 };
 use gtk::{gdk, glib, prelude::*};
-use nixe_ui::widgets as w;
+use nyx_ui::widgets as w;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -429,7 +429,7 @@ fn open_inner(ui: &Ui, contact: Option<Contact>, merge_other: Option<String>) {
         } else {
             if let Some(old) = book.contacts.iter_mut().find(|old| old.id == c.id) {
                 // Only what was changed here: anything changed elsewhere while the editor
-                // was open (by Nixe Assistant, or a list) stays.
+                // was open (by Nyx Assistant, or a list) stays.
                 c = changes_onto(&original, &c, old);
                 *old = c.clone();
             } else {
@@ -683,10 +683,10 @@ pub fn settings(ui: &Ui) {
     for (keys, action) in ui::SHORTCUTS {
         g.append(&w::row(action, "", Some(w::key_caps(keys).upcast_ref())));
     }
-    nixe_ui::settings_card::open_page(
+    nyx_ui::settings_card::open_page(
         &ui.overlay,
         &ui.window,
-        nixe_ui::settings_card::Spec {
+        nyx_ui::settings_card::Spec {
             groups: &[
                 ("Contacts", "system-users-symbolic", "Names and sorting"),
                 ("Contacts window", "applications-graphics-symbolic", "Theme and motion"),
