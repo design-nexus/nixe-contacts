@@ -1,21 +1,27 @@
-/* Contacts uses the suite frame, option rows and semantic palette. */
-window.contacts-window .toolbar { min-height: 46px; padding: 0 12px 0 14px; border-bottom: 1px solid @hairline; }
-.contact-list { background: @theme_bg; }
-.contact-list row { border-radius: 0; border-bottom: 1px solid @divider; background: transparent; }
+/* Contacts on Nyx 2.0: only Contacts' own parts. One surface: spacing and soft
+   fills separate the sections, the list and the card, never lines. */
+window.contacts-window .app-header button.accent-action { color: @theme_accent; }
+window.contacts-window .app-header button.accent-action:hover { background: alpha(@theme_accent, 0.14); }
+.nav-top { padding: 0 0 6px 0; }
+.nav-foot { padding: 6px 4px 0 8px; }
+.nav-foot .status-readout { color: @theme_dim_text; font-size: 11.5px; }
+.contact-list { background: @theme_bg; padding: 0 8px; }
+.contact-list row { border-radius: var(--nyx-radius-small); background: transparent; }
 .contact-list row:hover { background: @row_hover; }
 .contact-list row:selected { background: @nav_active; }
 .contact-row-name { font-weight: 500; }
+.contact-list image.accent { color: @theme_accent; }
 .contact-row-description { font-size: 0.88em; }
-.contact-details { padding: 12px 24px 36px; border-left: 1px solid @hairline; }
+.contact-details { padding: 12px 24px 36px; }
 .contact-details > .group-title { margin-top: 14px; margin-bottom: 0; }
 .contact-name { font-size: 1em; font-weight: 600; }
 .contact-heading { color: @theme_dim_text; font-size: 0.9em; font-weight: 600; letter-spacing: 2px; margin-top: 14px; }
-.contact-avatar { color: @theme_accent; background: transparent; border: 1px solid @hairline; border-radius: 10px; font-size: 1em; }
-.contact-input { background: @theme_bg; color: @theme_text; border: 1px solid @hairline; border-radius: 6px; }
+.contact-avatar { color: @theme_accent; background: @theme_card; border-radius: 10px; font-size: 1em; }
+.contact-input { background: @field; color: @theme_text; border: 1px solid transparent; border-radius: 6px; }
 .error { color: @theme_danger; }
 
 window.contacts-window .settings-navigation button.nav-add { color: @theme_dim_text; }
 .contact-empty { color: @theme_dim_text; }
 .contact-empty button { min-width: 0; }
 
-.contact-list row.contact-empty-row { border-bottom: none; background: transparent; }
+.contact-list row.contact-empty-row { background: transparent; }

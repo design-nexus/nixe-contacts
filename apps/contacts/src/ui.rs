@@ -20,7 +20,10 @@ pub struct State {
     pub details: gtk::Box,
     pub search: gtk::SearchEntry,
     nav: gtk::Box,
+    /// The sidebar's top, holding its collapse toggle.
     head: gtk::Box,
+    /// The header's subtitle: the section you're in.
+    subtitle: gtk::Label,
     sidebar: gtk::Box,
     pub list_scroll: gtk::ScrolledWindow,
     detail_scroll: gtk::ScrolledWindow,
@@ -72,8 +75,15 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     let sidebar = w::vbox(0);
     sidebar.set_hexpand(false);
     sidebar.add_css_class("settings-navigation");
-    let head = chrome::sidebar_head("Contacts", Some("Find (Ctrl+F)"));
-    sidebar.append(&head.root);
+    // The sidebar's own toggle, at its top right (centred on the narrow rail).
+    let head = w::hbox(0);
+    head.add_css_class("nav-top");
+    let collapse = w::bar_button("sidebar-show-symbolic", "Collapse the sidebar (Ctrl+B)");
+    collapse.add_css_class("nav-toggle");
+    collapse.set_hexpand(true);
+    collapse.set_halign(gtk::Align::End);
+    head.append(&collapse);
+    sidebar.append(&head);
     let nav = w::vbox(0);
     nav.set_hexpand(false);
     let nav_scroll = gtk::ScrolledWindow::builder()
@@ -84,26 +94,29 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         .child(&nav)
         .build();
     sidebar.append(&nav_scroll);
+    // The sidebar's foot: how many contacts are shown and selected.
+    let foot = w::hbox(0);
+    foot.add_css_class("nav-foot");
+    let status = w::label("", "status-readout");
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    status.set_hexpand(true);
+    status.set_xalign(0.0);
+    status.add_css_class("compact-hide");
+    foot.append(&status);
+    sidebar.append(&foot);
     body.append(&sidebar);
     let page = w::vbox(0);
     page.add_css_class("settings-content");
     page.set_hexpand(true);
     body.append(&page);
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search contacts…"));
-    search.set_visible(false);
-    page.append(&chrome::search_strip(&search));
-    let toolbar = w::hbox(6);
-    toolbar.add_css_class("toolbar");
-    page.append(&toolbar);
+    search.set_placeholder_text(Some("Search contacts  (Ctrl+F)"));
+    search.update_property(&[gtk::accessible::Property::Label("Search contacts")]);
+    search.add_css_class("bar-search");
+    search.set_width_chars(40);
     let new = w::bar_button("contact-new-symbolic", "New contact (Ctrl+N)");
-    new.add_css_class("suggested-action");
-    toolbar.append(&new);
+    new.add_css_class("accent-action");
     let edit = w::bar_button("document-edit-symbolic", "Edit selected contact");
-    toolbar.append(&edit);
-    let spacer = w::hbox(0);
-    spacer.set_hexpand(true);
-    toolbar.append(&spacer);
     let menu = gtk::MenuButton::builder().icon_name("view-more-symbolic").tooltip_text("Contact actions").build();
     let pop = gtk::Popover::new();
     pop.add_css_class("menu-popover");
@@ -111,7 +124,15 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     pop.set_child(Some(&actions));
     menu.add_css_class("bar-button");
     menu.set_popover(Some(&pop));
-    toolbar.append(&menu);
+    menu.set_valign(gtk::Align::Center);
+    // The header: the app and the section you're in, search, and the contact actions.
+    let header = chrome::app_header(&window, "x-office-address-book-symbolic", "Contacts");
+    header.center.append(&search);
+    header.end.append(&edit);
+    header.end.append(&menu);
+    header.end.append(&new);
+    header.end.append(&chrome::settings_button(settings));
+    frame.prepend(&header.root);
     let panes = w::hbox(0);
     panes.set_vexpand(true);
     page.append(&panes);
@@ -136,28 +157,11 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         .child(&details)
         .build();
     panes.append(&detail_scroll);
-    let statusbar = w::hbox(16);
-    statusbar.add_css_class("status-bar");
-    let shortcuts = gtk::Button::new();
-    shortcuts.add_css_class("status-help");
-    shortcuts.set_tooltip_text(Some("Show the keyboard shortcuts (F1)"));
-    let help_content = w::hbox(10);
-    help_content.append(&w::label("F1", "status-key"));
-    help_content.append(&w::label("Shortcuts", ""));
-    shortcuts.set_child(Some(&help_content));
-    statusbar.append(&shortcuts);
-    let status = w::label("", "status-readout");
-    status.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-    status.set_hexpand(true);
-    status.set_xalign(1.0);
-    statusbar.append(&status);
-    statusbar.append(&chrome::gear(settings));
-    frame.append(&statusbar);
     let toast_box = w::hbox(10);
     toast_box.add_css_class("toast");
     toast_box.set_halign(gtk::Align::Center);
     toast_box.set_valign(gtk::Align::End);
-    toast_box.set_margin_bottom(48);
+    toast_box.set_margin_bottom(24);
     toast_box.set_visible(false);
     overlay.add_overlay(&toast_box);
     let start = section.map(str::to_string).unwrap_or_else(|| nyx_theme::start_page("all", &prefs::get().last_section));
@@ -171,7 +175,8 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         details,
         search,
         nav,
-        head: head.root,
+        head,
+        subtitle: header.subtitle.clone(),
         sidebar,
         list_scroll,
         detail_scroll,
@@ -195,14 +200,10 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
     let u = ui.clone();
     edit.connect_clicked(move |_| edit_selected(&u));
     let u = ui.clone();
-    head.toggle.connect_clicked(move |_| {
+    collapse.connect_clicked(move |_| {
         prefs::update(|p| p.sidebar_collapsed = !p.sidebar_collapsed);
         layout(&u);
     });
-    if let Some(b) = head.search {
-        let u = ui.clone();
-        b.connect_clicked(move |_| find(&u));
-    }
     let u = ui.clone();
     ui.search.connect_search_changed(move |_| refresh(&u));
     let u = ui.clone();
@@ -229,12 +230,9 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
         let u = u.clone();
         glib::idle_add_local_once(move || layout(&u));
     });
-    let u = ui.clone();
-    ui.search.connect_stop_search(move |s| {
-        // Esc while typing in the search: clear it and put it away.
+    ui.search.connect_stop_search(|s| {
+        // Esc while typing in the search: clear it.
         s.set_text("");
-        s.set_visible(false);
-        layout(&u);
     });
     for (label, run) in [
         ("Merge exact duplicates", 9),
@@ -270,7 +268,6 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
             }
         });
     }
-    shortcuts.connect_clicked(|_| show_shortcuts());
     nyx_ui::keys::install(
         &ui.window,
         nyx_ui::keys::Common { settings: Some(settings), shortcuts: Some(show_shortcuts), close: true, ..Default::default() },
@@ -292,7 +289,6 @@ pub fn present(app: &gtk::Application, section: Option<&str>) -> anyhow::Result<
                     nyx_ui::settings_card::escape();
                 } else {
                     u.search.set_text("");
-                    u.search.set_visible(false);
                     u.showing_detail.set(false);
                     layout(&u);
                 }
@@ -806,7 +802,7 @@ fn nav(ui: &Ui) {
         }
         if id == *ui.section.borrow() {
             b.add_css_class("active");
-            chrome::set_title(&ui.window, "Contacts", &name);
+            set_page_title(ui, &name);
         }
         let u = ui.clone();
         b.connect_clicked(move |_| navigate(&u, &id));
@@ -821,7 +817,7 @@ fn nav(ui: &Ui) {
         let (b, _) = nav_button("network-workgroup-symbolic", "Online books", "Contacts from connected accounts");
         if ui.section.borrow().as_str() == "online" {
             b.add_css_class("active");
-            chrome::set_title(&ui.window, "Contacts", "Online books");
+            set_page_title(ui, "Online books");
         }
         let u = ui.clone();
         b.connect_clicked(move |_| navigate(&u, "online"));
@@ -832,7 +828,7 @@ fn nav(ui: &Ui) {
             let (b, _) = nav_button("network-workgroup-symbolic", book.label(), book.label());
             if id == *ui.section.borrow() {
                 b.add_css_class("active");
-                chrome::set_title(&ui.window, "Contacts", book.label());
+                set_page_title(ui, book.label());
                 let count = w::label(&ui.eds_contacts.borrow().len().to_string(), "nav-readout");
                 count.add_css_class("compact-hide");
                 if let Some(line) = b.child().and_downcast::<gtk::Box>() {
@@ -860,6 +856,12 @@ fn nav(ui: &Ui) {
     });
     ui.nav.append(&add);
 }
+/// The section's name in the window title and the header's subtitle.
+fn set_page_title(ui: &Ui, name: &str) {
+    chrome::set_title(&ui.window, "Contacts", name);
+    ui.subtitle.set_text(name);
+    ui.subtitle.set_visible(!name.is_empty());
+}
 fn layout(ui: &Ui) {
     let width = if ui.window.width() > 0 { ui.window.width() } else { ui.window.default_width() };
     let narrow = width > 0 && width < 980;
@@ -871,7 +873,9 @@ fn layout(ui: &Ui) {
     } else {
         ui.sidebar.remove_css_class("compact");
     }
-    chrome::set_head_compact(&ui.head, compact);
+    if let Some(toggle) = ui.head.first_child() {
+        toggle.set_halign(if compact { gtk::Align::Center } else { gtk::Align::End });
+    }
     fn hide(root: &gtk::Widget, compact: bool) {
         if root.has_css_class("nav-item")
             && let Some(content) = root.downcast_ref::<gtk::Button>().and_then(|b| b.child()) {
@@ -886,7 +890,7 @@ fn layout(ui: &Ui) {
             child = c.next_sibling();
         }
     }
-    hide(ui.nav.upcast_ref(), compact);
+    hide(ui.sidebar.upcast_ref(), compact);
     let empty = visible(ui).is_empty();
     ui.list_scroll.set_hexpand(narrow || empty);
     ui.list_scroll.set_visible(empty || !narrow || !ui.showing_detail.get());
@@ -1105,7 +1109,6 @@ pub fn avatar(c: &Contact, size: i32) -> gtk::Widget {
     l.upcast()
 }
 fn find(ui: &Ui) {
-    ui.search.set_visible(true);
     ui.search.grab_focus();
 }
 fn edit_selected(ui: &Ui) {

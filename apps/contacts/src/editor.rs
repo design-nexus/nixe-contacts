@@ -672,13 +672,12 @@ pub fn settings(ui: &Ui) {
         glib::ControlFlow::Continue
     });
     g.append(&w::row("Current colors", "", Some(swatches.upcast_ref())));
-    for (name, on, motion) in [("Glow", p.glow, false), ("Reduce motion", p.reduce_motion, true)] {
-        let (r, _) = w::switch_row(name, "", on, move |on| {
-            prefs::update(|p| if motion { p.reduce_motion = on } else { p.glow = on });
-            theme::apply();
-        });
-        g.append(&r);
-    }
+    g.append(&w::accent_row("contacts"));
+    let (r, _) = w::switch_row("Reduce motion", "", p.reduce_motion, |on| {
+        prefs::update(|p| p.reduce_motion = on);
+        theme::apply();
+    });
+    g.append(&r);
     let g = group(&body, "Keyboard");
     for (keys, action) in ui::SHORTCUTS {
         g.append(&w::row(action, "", Some(w::key_caps(keys).upcast_ref())));

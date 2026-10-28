@@ -1,6 +1,7 @@
 use crate::prefs;
 pub use nyx_theme::*;
 pub fn install() {
+    nyx_theme::use_design_2();
     nyx_theme::install(Style {
         window_class: "contacts-window",
         base_skip: &[],
