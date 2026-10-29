@@ -1,6 +1,6 @@
 use crate::{
     model::{self, Contact, Field},
-    prefs, theme,
+    prefs,
     ui::{self, Ui},
 };
 use gtk::{gdk, glib, prelude::*};
@@ -614,84 +614,30 @@ pub fn settings(ui: &Ui) {
         });
         g.append(&r);
     }
-    let g = group(&body, "Contacts window");
-    g.append(&w::start_row());
-    let (row, dd) = w::choice_row(
-        "Theme",
-        "Choose a bundled or user theme.",
-        theme::all().into_iter().map(|t| (t.id, t.name)).collect(),
-        &p.theme,
-        |id| {
-            prefs::update(|p| {
-                p.mode = prefs::ThemeMode::Theme;
-                p.theme = id;
-            });
-            theme::apply();
-        },
-    );
-    dd.set_sensitive(p.mode == prefs::ThemeMode::Theme || !theme::omarchy_available());
-    if theme::omarchy_available() {
-        let (r, _) = w::switch_row(
-            "Follow Omarchy theme",
-            "Match the desktop colors and update live.",
-            p.mode == prefs::ThemeMode::Omarchy,
-            move |on| {
-                prefs::update(|p| p.mode = if on { prefs::ThemeMode::Omarchy } else { prefs::ThemeMode::Theme });
-                dd.set_sensitive(!on);
-                theme::apply();
-            },
-        );
-        g.append(&r);
-    }
-    g.append(&row);
-    let swatches = w::hbox(4);
-    let repaint = {
-        let s = swatches.clone();
-        move || {
-            ui::clear(&s);
-            let p = theme::current_palette();
-            for color in [&p.bg, &p.surface, &p.muted, &p.text, &p.accent, &p.danger] {
-                let b = w::hbox(0);
-                b.set_size_request(24, 24);
-                b.add_css_class("swatch");
-                let css = gtk::CssProvider::new();
-                css.load_from_string(&format!("box {{ background: {color}; }}"));
-                #[allow(deprecated)]
-                b.style_context().add_provider(&css, gtk::STYLE_PROVIDER_PRIORITY_USER);
-                s.append(&b);
-            }
-        }
-    };
-    repaint();
-    let weak = swatches.downgrade();
-    glib::timeout_add_seconds_local(1, move || {
-        if weak.upgrade().is_none() {
-            return glib::ControlFlow::Break;
-        }
-        repaint();
-        glib::ControlFlow::Continue
-    });
-    g.append(&w::row("Current colors", "", Some(swatches.upcast_ref())));
-    g.append(&w::accent_row("contacts"));
-    let (r, _) = w::switch_row("Reduce motion", "", p.reduce_motion, |on| {
-        prefs::update(|p| p.reduce_motion = on);
-        theme::apply();
-    });
-    g.append(&r);
-    let g = group(&body, "Keyboard");
-    for (keys, action) in ui::SHORTCUTS {
-        g.append(&w::row(action, "", Some(w::key_caps(keys).upcast_ref())));
-    }
     nyx_ui::settings_card::open_page(
         &ui.overlay,
         &ui.window,
         nyx_ui::settings_card::Spec {
             groups: &[
                 ("Contacts", "system-users-symbolic", "Names and sorting"),
-                ("Contacts window", "applications-graphics-symbolic", "Theme and motion"),
-                ("Keyboard", "input-keyboard-symbolic", "Shortcuts"),
             ],
             search_text: None,
+            standard: Some(nyx_ui::settings_card::Standard {
+                app: "contacts",
+                about: nyx_ui::settings_card::About {
+                    name: "Contacts",
+                    icon: "io.github.design_nexus.nyx.Contacts",
+                    version: env!("CARGO_PKG_VERSION"),
+                    description: "An address book kept on this computer.",
+                    licence: env!("CARGO_PKG_LICENSE"),
+                    website: "https://github.com/design-nexus/nyx-contacts",
+                    issues: "https://github.com/design-nexus/nyx-contacts/issues",
+                    credits: &[],
+                },
+                shortcuts: ui::SHORTCUTS,
+                reduce_motion: || prefs::get().reduce_motion,
+                set_reduce_motion: |on| prefs::update(|p| p.reduce_motion = on),
+            }),
         },
         root.upcast_ref(),
         &body,

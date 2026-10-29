@@ -8,8 +8,8 @@ repository.workspace = true
 
 [dependencies]
 nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "52cba5e27a3dd5f00c780f53e423302b4b5f9c9c" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "144e77df1b6561fd8d0667e0d58306696c3e4d63" }
-nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "144e77df1b6561fd8d0667e0d58306696c3e4d63" }
+nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "d6400bb7d1940dcc2ab86bb86c4ef410db3b4ff4" }
+nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "d6400bb7d1940dcc2ab86bb86c4ef410db3b4ff4" }
 nyx-accounts = { git = "https://github.com/design-nexus/nyx-core.git", rev = "52cba5e27a3dd5f00c780f53e423302b4b5f9c9c" }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }
 anyhow = "1"
