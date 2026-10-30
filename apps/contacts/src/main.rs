@@ -1,3 +1,4 @@
+mod dialog_dismissal;
 mod control;
 mod editor;
 mod formats;
@@ -51,6 +52,7 @@ fn main() -> glib::ExitCode {
             Err(e) => {
                 eprintln!("Contacts: {e:#}");
                 let (w, b) = nyx_ui::widgets::dialog("Contacts could not open", 480);
+                crate::dialog_dismissal::add(&w, &b, "Close");
                 b.append(&gtk::Label::new(Some(&format!("{e:#}\nYour address book has been kept unchanged."))));
                 w.set_application(Some(app));
                 w.present();

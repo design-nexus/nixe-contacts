@@ -1202,6 +1202,7 @@ fn membership(ui: &Ui) {
         return;
     }
     let (dialog, card) = w::dialog("Add to list", 400);
+    crate::dialog_dismissal::add(&dialog, &card, "Cancel");
     let lists = ui.book.borrow().lists.clone();
     if lists.is_empty() {
         card.append(&label("Create a list using the + button in the sidebar first.", "dim"));

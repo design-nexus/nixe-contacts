@@ -39,6 +39,7 @@ pub fn import_path(ui: &Ui, path: &Path) {
 }
 fn mapping(ui: &Ui, data: formats::CsvData) {
     let (dialog, card) = w::dialog("Map CSV columns", 560);
+    crate::dialog_dismissal::add(&dialog, &card, "Cancel");
     dialog.set_default_height(620);
     card.append(&ui::label("Review the destination for each column. Unmapped columns will be omitted.", "dim"));
     let body = w::vbox(8);
@@ -165,6 +166,7 @@ pub fn export(ui: &Ui, csv: bool) {
     }
     if csv {
         let (dialog, card) = w::dialog("Export CSV", 520);
+        crate::dialog_dismissal::add(&dialog, &card, "Cancel");
         card.append(&ui::label("CSV includes names, company, job title, birthday, notes, up to three emails, phone and street address columns, and the first website. Photos, list membership, custom properties, and additional websites are omitted. Use vCard for richer contact details.","dim"));
         let b = ui::button("Choose destination…", "Save an Outlook-compatible CSV");
         card.append(&b);

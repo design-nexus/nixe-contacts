@@ -510,6 +510,7 @@ fn model_photo(bytes: &[u8]) -> Vec<u8> {
 
 pub fn review_merge(ui: &Ui, a: &Contact, b: &Contact) {
     let (dialog, card) = w::dialog("Review duplicate", 580);
+    crate::dialog_dismissal::add(&dialog, &card, "Cancel");
     dialog.set_default_height(640);
     card.append(&ui::label("Choose the primary card, then review conflicting values. Distinct emails, phones, addresses, websites, notes, and list memberships will be kept.","dim"));
     let primary = gtk::DropDown::from_strings(&[&format!("Primary: {}", a.name(false)), &format!("Primary: {}", b.name(false))]);
